@@ -1,0 +1,5 @@
+Degradation_Tag	N
+Intact	16
+5'_truncated	29
+3'_truncated	78
+Both_truncated	18

@@ -1,0 +1,313 @@
+---
+title: "Differential analysis of uridylation rates"
+author: 'Zuber'
+date: "30092025"
+output:
+  html_document:
+    toc: yes
+---
+
+```{r "setup", echo=TRUE}
+require("knitr") #loading of the knitr package
+knitr::opts_knit$set(root.dir = "~/FLEPseq2/RUN41_Damien/Analyse_092025/1_Uridylation")# Setting working directory
+```
+
+
+```{R}
+#needed packages
+library(data.table)
+```
+
+# Import files with uridylation percentages
+```{R}
+Utails_per_gene <- '/shared/home/hzuber/FLEPseq2/RUN41_Damien/Analyse_092025/1_Uridylation/Input'
+file_Utails_per_gene <- list.files(Utails_per_gene, full.names = TRUE)
+list_Utails_per_gene <- lapply(file_Utails_per_gene, function (x) fread(x))
+table_Utails_per_gene <- do.call("rbind",list_Utails_per_gene)
+```
+
+```{R}
+my_prepare <- function(x) { 
+  
+    x$variable <- x$Genotype
+    x$variable <- factor(x$variable, levels=c("Col0", "xrn4", "xrn4_dne1", "dne1_3_11"))
+    
+    x$Percent_co <- ifelse(x$Percent==0, 0.1/x$total*100, x$Percent)
+    
+    x$Uridylated <- as.numeric(x$Percent_co)
+    x$NonUridylated <- as.numeric(100 - x$Percent_co)
+    return(x)
+}
+
+Table <- my_prepare(table_Utails_per_gene)
+```
+
+
+function to keep only gene present in all combination of groups
+# Apply hte function
+```{R}
+library(dplyr)
+filter_A_for_all_BC <- function(df) {
+  # Extraire toutes les combinaisons distinctes de Genotype et Rep
+  all_BC <- df %>%
+    distinct(Genotype, Rep)
+  
+  # Pour chaque Feature.name, compter combien de combinaisons (B,C) il couvre
+  valid_A <- df %>%
+    distinct(Genotype, Rep, Feature.name) %>%
+    group_by(Feature.name) %>%
+    summarise(n_bc = n()) %>%
+    ungroup()
+  
+  # Nombre total de combinaisons Genotype, Rep dans la table
+  total_bc <- nrow(all_BC)
+  
+  # Garder les Feature.name qui ont toutes les combinaisons Genotype, Rep
+  valid_A <- valid_A %>%
+    filter(n_bc == total_bc) %>%
+    pull(Feature.name)
+  
+  # Filtrer le df original pour garder uniquement les lignes avec ces A valides
+  df %>% filter(Feature.name %in% valid_A)
+}
+```
+
+Function to apply a glm for proportion
+```{R}
+table_glht <- function(x) {
+  pq <- summary(x)$test
+  mtests <- cbind(pq$coefficients, pq$sigma, pq$tstat, pq$pvalues)
+  error <- attr(pq$pvalues, "error")
+  colnames(mtests) <- c("Estimate", "Std.Error", "z.value", "p.value")
+  return(mtests)
+}
+```
+
+```{R}
+library(multcomp)
+my_glm_test <- function(x) {
+
+Result_table_exp <- data.frame(Estimate=as.numeric(), Std.Error=as.numeric(), z.value=as.numeric(), p.value=as.numeric(), comparaison=as.character(), Feature.name=as.character(), padj=as.character(), Condition=as.character())
+
+for (t in unique(x$Condition))  {
+  print(t)
+
+  Result_table <- data.frame(Estimate=as.numeric(), Std.Error=as.numeric(), z.value=as.numeric(), p.value=as.numeric(), comparaison=as.character(), Feature.name=as.character())
+  Selec_condition <- x[x$Condition==t,]
+  Selec_condition <- filter_A_for_all_BC(Selec_condition)
+  
+  
+  for (i in unique(Selec_condition$Feature.name)) {
+  print(i)
+  PermRNA_percent_50_tailed_U_gene <- Selec_condition[Selec_condition$Feature.name==i, ]
+ if (nrow(PermRNA_percent_50_tailed_U_gene) <= 2) {next}
+ Uri1 <- glm(cbind(Uridylated , NonUridylated ) ~ variable, family=quasibinomial, data=PermRNA_percent_50_tailed_U_gene)
+  glht_obj <- summary(glht(Uri1 , mcp(variable="Tukey")))
+  Tab <- as.data.frame(table_glht(glht_obj))
+  Tab$comparaison <- row.names(Tab)
+  Tab$Feature.name <- i
+  rownames(Tab) <- NULL
+  Result_table <- rbind(Result_table, Tab)
+  }
+
+
+Result_table$padj <- p.adjust(Result_table$p.value, "BH")
+Result_table$Condition <- t
+Result_table_exp <- rbind(Result_table_exp, Result_table)
+  
+}
+
+return(Result_table_exp)
+}
+```
+
+# Apply hte function
+```{R}
+Stat <- my_glm_test(Table)
+```
+
+## count number of differentially expressed genes
+
+```{R}
+Stat$diff <- "no-sign"
+Stat[Stat$padj<=0.05,]$diff <- "sign"
+
+Stat$Change <- "no-change"
+Stat[Stat$Estimate<0,]$Change <- "decrease"
+Stat[Stat$Estimate>0,]$Change <- "increase"
+```
+
+
+```{R}
+Stat$diff <- as.factor(Stat$diff)
+Stat$Change <- as.factor(Stat$Change)
+
+Count_ofDUgenes <- Stat %>% group_by(comparaison, Condition, diff, Change, .drop=FALSE) %>%
+                                  summarise(number=n())  %>%
+                                  group_by(comparaison, Condition) %>%
+                                  mutate(total=sum(number), Percent=100*number/sum(number))
+
+
+Count_ofDUgenes$comparaison <- factor(Count_ofDUgenes$comparaison, levels=c("xrn4 - Col0", "xrn4_dne1 - Col0", "xrn4_dne1 - xrn4", "dne1_3_11 - Col0"))
+Count_ofDUgenes_diff <- Count_ofDUgenes[Count_ofDUgenes$diff=="sign",]
+
+
+write.table(Count_ofDUgenes_diff, "Countofdifferentially_uridylatedmRNA.txt", sep='\t', row.names=FALSE, quote=FALSE)
+```
+
+
+# Graph
+```{R}
+library(ggplot2)
+ my_theme <- theme(panel.spacing = unit(0.1, "lines"),
+                      plot.title = element_text(hjust = 0.5),
+                      panel.background = element_blank(),
+                      panel.grid.major.y = element_line(linewidth = 0.2, linetype = 'dashed', colour = "gray70"),
+                      panel.border = element_rect(colour="black",fill=NA,linewidth=0.5),
+                      axis.text.y = element_text(color="black",size=8),
+                      axis.text.x = element_blank(),
+                      axis.ticks.x = element_blank(),
+                      axis.title = element_blank(),
+                      #legend.position="none",
+                      legend.text = element_text(color="black",size=7),
+                      legend.title = element_text(color="black",size=7),
+                      legend.key.size = unit(0.8,"line"),
+                      strip.text = element_blank())
+```
+
+
+```{R}
+my_colors <- c("#E69F00", "#56B4E9", "#CC79A7", "#009E73")
+
+
+Count_ofDUgenes_diff_selec_UP <- Count_ofDUgenes_diff[Count_ofDUgenes_diff$Change=="increase", ]
+Count_ofDUgenes_diff_selec_DOWN <- Count_ofDUgenes_diff[Count_ofDUgenes_diff$Change=="decrease", ]
+
+p1 <- ggplot(Count_ofDUgenes_diff_selec_DOWN, aes(x=comparaison, y=Percent, fill=comparaison)) + 
+            geom_bar(stat="identity") +
+            geom_text(aes(label=number), position=position_dodge(width=0.9), vjust=+2, hjust=0.5, size=2) +
+            scale_fill_manual(values = my_colors) +
+            my_theme +
+                      scale_y_reverse(limits=c(40,0), breaks = seq(40, 0, by = -10)) 
+
+  
+
+p2 <- ggplot(Count_ofDUgenes_diff_selec_UP, aes(x=comparaison, y=Percent, fill=comparaison)) + 
+            geom_bar(stat="identity") +
+            geom_text(aes(label=number), position=position_dodge(width=0.9), vjust=-0.5, hjust=0.5, size=2) +
+            scale_y_continuous(limits=c(0, 40), breaks=seq(0,40,by=10)) +
+            scale_fill_manual(values = my_colors) +
+            my_theme
+
+
+
+library(gridExtra)
+p <- grid.arrange(p2, p1, ncol=1, nrow = 2, widths=c(8), heights=c(5,5))
+
+ggsave(filename ="Percentofdifferentiallyuridylated.pdf", p, width = 3, height = 3, dpi = 300)
+```
+
+
+
+## Annotate results
+
+Make a table with percent of uridylation and stats
+```{R}
+source("/Users/hzuber/Documents/BIOINFORMATIQUE/R_tips/custom_function/HZ_custom_functions.R")
+
+Tab_perc_dcast  <- reshape2::dcast(table_Utails_per_gene, Feature.name ~ Condition + Genotype + Rep, value.var = "Percent")
+
+The_table_DU_dcast  <- reshape2::dcast(Stat, Feature.name ~ comparaison, value.var = "padj")
+
+Table_merge <- merge(Tab_perc_dcast, The_table_DU_dcast)
+row.names(Table_merge) <- Table_merge$Feature.name
+
+Table_merge_an <- addBiomaRtAnnotation_2(Table_merge, features= "ensembl_transcript_id")
+
+
+Table_merge_an_clean <- Table_merge_an[complete.cases(Table_merge_an[, 2:17]), ]
+
+write.table(Table_merge_an_clean, "Percent_and_stat_corrected.txt", sep='\t', row.names=FALSE, quote=FALSE)
+
+Table_merge_an_clean_diff <- Table_merge_an_clean[Table_merge_an_clean$]
+```
+
+# Uridylation per gene
+```{R}
+p2 <- ggplot (table_Utails_per_gene) + geom_boxplot(aes(x=Rep, y=Percent, fill=Genotype), alpha=0.7, outlier.shape = NA) +
+                              scale_color_manual(values = my_colors) +
+                              scale_fill_manual(values = my_colors) +
+                              coord_cartesian(ylim = c(0, 35)) +
+                              facet_wrap(~Condition, nrow=1) +
+                      theme(
+                      panel.spacing = unit(0.1, "lines"),
+                      plot.title = element_text(hjust = 0.5, size=7),
+                      panel.background = element_blank(),
+                      panel.grid.major.y = element_line(size = 0.2, linetype = 'dashed', colour = "gray70"),
+                      #panel.grid.major.x = element_line(size = 0.2, linetype = 'dashed', colour = "gray70"),
+                      panel.border = element_rect(colour="black",fill=NA,size=0.5),
+                      legend.position = "right",
+                      axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, color="black"),
+                      axis.text.y = element_text(color="black"),
+                      #strip.text.x = element_blank()
+                      ) 
+p2
+ggsave(filename ="Utails_per_gene.pdf", p2, width = 8, height = 5, dpi = 300)
+```
+
+# Compare with list of DNE 1 targets
+
+```{R}
+#more uridylation in xrn4 dne vs xrn4
+List_A <- Stat[Stat$comparaison=="xrn4_dne1 - xrn4" & Stat$padj<=0.05 & Stat$Estimate>0,]
+#less uridylation in xrn4 dne vs xrn4Stat$
+List_B <- Stat[Stat$comparaison=="xrn4_dne1 - xrn4" & Stat$padj<=0.05 & Stat$Estimate<0,]
+#GMUCT_DOWN
+List_C <- fread("~/FLEPseq2/RUN41_Damien/Genelists/GMUCT_DOWN.txt", header=FALSE)
+#GMUCT_UP
+List_D <- fread("~/FLEPseq2/RUN41_Damien/Genelists/GMUCT_UP.txt", header=FALSE)
+#GMUCT_UP_DOWN
+List_E <- fread("~/FLEPseq2/RUN41_Damien/Genelists/GMUCT_UP_DOWN.txt", header=FALSE)
+#HIGH_CONFIDENCE_TARGETS
+List_F <- fread("~/FLEPseq2/RUN41_Damien/Genelists/HIGH_CONFIDENCE_TARGETS.txt", header=FALSE)
+#NAGARAJAN_DNE1_TARGETS
+List_G <- fread("~/FLEPseq2/RUN41_Damien/Genelists/NAGARAJAN_DNE1_TARGETS.txt", header=FALSE)
+#TRIBE_D153N
+List_H <- fread("~/FLEPseq2/RUN41_Damien/Genelists/TRIBE_D153N.txt", header=FALSE)
+#TRIBE_DNE1
+List_I <- fread("~/FLEPseq2/RUN41_Damien/Genelists/TRIBE_DNE1.txt", header=FALSE)
+
+```
+
+
+```{R}
+library(UpSetR)
+# Named list
+gene_lists <- list(
+  Up_uridylation = List_A$Feature.name ,
+  Down_uridylation = List_B$Feature.name,
+  HIGH_CONFIDENCE = List_F$V1,
+  GMUCT_DOWN = List_C$V1,
+  GMUCT_UP = List_D$V1,
+  GMUCT_UP_DOWN = List_E$V1,
+  NAGARAJAN = List_G$V1,
+  TRIBE_D153N = List_H$V1,
+  TRIBE_DNE1 = List_I$V1
+)
+
+
+
+
+# Convert to binary data frame
+input_df <- fromList(gene_lists)
+
+# Plot
+pdf("upset_listvsuridylation.pdf", width = 10, height = 7)
+upset(input_df, nsets = 9)
+dev.off()
+```
+
+
+```{R}
+sessionInfo()
+```

@@ -1,0 +1,1616 @@
+---
+title: "fig_1"
+output: html_document
+date: "2025-08-08"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r libraries}
+library(pander)
+library(knitr)
+
+library(data.table)
+setDTthreads(0)
+
+library(stringr)
+
+library(ggplot2)
+library(viridis)
+library(viridisLite)
+```
+
+```{r setup, include = FALSE}
+setwd("/Users/hlange/Desktop/bioinfo/Flepseq_analysis")
+knitr::opts_knit$set(root.dir = "/Users/hlange/Desktop/bioinfo/Flepseq_analysis",
+                     base.dir = "/Users/hlange/Desktop/bioinfo/Flepseq_analysis")
+```
+```{r ticks}
+#ticks and breaks for polyA profiles
+
+custom_breaks <- c(0,10,20,30,40,50,60,70,80,90,100,110,120,130,140,150,160,170,180,190,200)
+every_nth <- function(x, nth, empty = TRUE, inverse = FALSE) 
+  {
+  if (!inverse) {
+    if(empty) {
+      x[1:nth == 1] <- ""
+      x
+      } else {
+        x[1:nth != 1]
+        }
+    } else {
+      if(empty) {
+        x[1:nth != 1] <- ""
+        x
+        } else {
+          x[1:nth == 1]
+        }
+    }
+}
+```
+```{r functions}
+round_any = function(x, accuracy, f=ceiling){f(x/ accuracy) * accuracy}
+
+# peak functions
+# detect the first peak
+find_first_peak <- function(x, y) {
+    # Find local maxima
+    peaks <- which(diff(sign(diff(y))) == -2) + 1
+    
+    # If no peaks are found, return NA
+    if (length(peaks) == 0) {
+        return(list(x = NA_real_, y = NA_real_))
+    }
+    
+    # Select the first peak based on its position in the density (smallest x value)
+    first_peak <- peaks[1]
+    
+    # Return the x and y value of the first peak
+    return(list(x = x[first_peak], y = y[first_peak]))
+}
+
+# detect the most prominent peak in polyA size densities
+find_single_peak <- function(x, y) {
+  # Identify peaks
+  peaks <- which(diff(sign(diff(y))) == -2) + 1
+  if (length(peaks) == 0) {
+    return(list(peak.x = NA_real_))
+  }
+  
+  # Calculate prominences for each peak
+  prominences <- y[peaks] - sapply(peaks, function(peak) {
+    min(c(min(y[1:peak]), min(y[(peak + 1):length(y)])))
+  })
+  
+  # Return x position of the most prominent peak as named list
+  return(list(peak_x = x[peaks[which.max(prominences)]]))
+}
+
+# Function to calculate smoothed values
+precalc_smooth <- function(data, x_col, y_col, group_cols, span = span) {
+  smoothed_data <- C50[, {
+    fit <- loess(get(y_col) ~ get(x_col), 
+                 data= .SD, 
+                 span = span, 
+                 control = loess.control(surface = "direct"))  # Add this!
+    smooth <- predict(fit)
+    .(x = get(x_col), y = smooth)
+  }, by = group_cols]
+  return(smoothed_data)
+}
+
+# detect the most prom peak between 35 and 60
+find_second_peak <- function(x, y) {
+  # Restrict to the desired range
+  in_range <- which(x >= 35 & x <= 60)
+  if (length(in_range) < 3) {
+    return(list(peak_x = NA_real_))
+  }
+  
+  x_sub <- x[in_range]
+  y_sub <- y[in_range]
+  
+  # Identify peaks: local maxima with a slope change
+  peaks <- which(diff(sign(diff(y_sub))) == -2) + 1
+  if (length(peaks) == 0) {
+    return(list(peak_2 = NA_real_))
+  }
+  
+  # Calculate prominences for each peak
+  prominences <- sapply(peaks, function(peak) {
+    left_min <- min(y_sub[1:peak])
+    right_min <- min(y_sub[(peak + 1):length(y_sub)])
+    y_sub[peak] - min(c(left_min, right_min))
+  })
+  
+  # Find the most prominent peak
+  most_prominent_index <- which.max(prominences)
+  peak_2_value <- x_sub[peaks[most_prominent_index]]
+  
+  return(list(peak_2 =peak_2_value))
+}
+```
+```{r font and fontsize}
+my_font <- "Helvetica" 
+axis_title_size<- 40 
+axis_text_size <- 36 
+legend_size <- 30
+strip_text_size <- 36 
+theme_set(
+theme_classic(base_family = my_font, base_size = axis_text_size, base_line_size = 1) + 
+  theme(
+    axis.title = element_text(size = axis_title_size),
+    panel.grid.major = element_line(linewidth = 0.3, color = "grey80"),
+    panel.grid.minor.x = element_blank(),     # remove vertical minor grid lines
+    panel.grid.minor.y = element_line(color = "grey85", linewidth = 0.3),  # keep horizontal minor grid
+    axis.text = element_text(size = axis_text_size),
+    legend.text = element_text(size = legend_size),
+    legend.title = element_blank(),
+    strip.text = element_text(size = strip_text_size, family = my_font),
+    strip.background = element_blank(),
+    axis.ticks = element_line(linewidth = 0.5)))
+
+
+
+theme_no_grid <- function() {
+  theme_classic(base_family = my_font, base_size = axis_text_size, base_line_size = 1) + 
+  theme(
+    axis.title = element_text(size = axis_title_size),
+    #panel.grid.major = element_line(linewidth = 0.3, color = "grey80"),
+    #panel.grid.minor.x = element_blank(),     # remove vertical minor grid lines
+    #panel.grid.minor.y = element_line(color = "grey85", linewidth = 0.3),  # keep horizontal minor grid
+    axis.text.x = element_blank(),
+    legend.text = element_text(size = legend_size),
+    legend.title = element_blank(),
+    strip.text = element_text(size = strip_text_size, family = my_font),
+    strip.background = element_blank(),
+    axis.ticks = element_line(linewidth = 0.5))
+}
+```
+```{r colors}
+
+tissue_colors <-  c(  
+   
+   "seedlings" = "#004949",
+   "rosette" = "#2F7F46")
+  
+
+# I use scale_color_viridis_d(option = "E", direction = -1, begin = 0.15, end = 0.8)+ for distributions split by values from other publications (i.e. te), and scale_color_viridis_d (option = "D", direction = -1, begin = 0.15, end = 0.8)+ for stacked barplots and distributions split by profile categories
+```
+```{r gag ten AGIs}
+gag_ten <- c("AT1G79040",
+             "AT1G29930",
+             "AT1G61520",
+             "AT1G20020",
+             "AT2G39730",
+             "AT2G42530",
+             "AT2G38540",
+             "AT2G21660",
+             "AT5G01530",
+             "AT5G02380")
+```
+
+
+# fread seedling
+```{r fread}
+seedling <- fread("/Users/hlange/Desktop/bioinfo/flepseq_preprocessing_paper/read_tables_paper/R10_seedling_WT_tailed.csv")
+```
+```{r C50 seedling}
+grouped_counts <- seedling[, .N, by = .(AGI, rep)]
+filtered_counts <- grouped_counts[N >= 50]
+unique_combinations <- uniqueN(grouped_counts, by = "rep")
+list_C50_seedling <- unique(filtered_counts[, if (.N == unique_combinations) .SD, by = AGI]$AGI)
+print(length(list_C50_seedling))
+rm(filtered_counts, unique_combinations)
+C50 <- seedling[AGI %in% list_C50_seedling]
+C50[, weight := 1/.N, by = .(AGI, rep)]
+filtered_counts <- grouped_counts[N >= 150]
+unique_combinations <- uniqueN(grouped_counts, by = "rep")
+list_C150_seedling <- unique(filtered_counts[, if (.N == unique_combinations) .SD, by = AGI]$AGI)
+rm(filtered_counts, grouped_counts, unique_combinations)
+```
+```{r table chack}
+check_seedling <- seedling[, .(n=.N), by = rep]
+AGI_seedling <- seedling[, .(Nr_AGI = uniqueN(AGI)), by = rep]
+table <- merge(check_seedling, AGI_seedling, by = "rep")
+```
+
+
+
+# Table_AGI
+## uridylation
+```{r Uridylation levels }
+Table_U <- C50[, .(n=.N), by = .(AGI, rep, tail, tissue)]
+
+all_combinations <- CJ(
+ tissue = unique(C50$tissue),
+  AGI = unique(C50$AGI),
+  rep = unique(C50$rep),
+ tail = unique(C50$tail)
+)
+Table_U <- merge(all_combinations, Table_U, by = c("AGI", "rep","tail", "tissue"), all.x = TRUE) 
+Table_U[, ':=' (tot = sum(n), perc_U = 100*n / sum(n)), by = .(AGI,rep, tissue)] 
+Table_U <- Table_U[tail=="uridylated A-Tails"]
+Table_U[is.na(perc_U), perc_U := 0]
+
+Table_U[, mean_U := mean(perc_U, na.rm = TRUE), by = .(AGI, tissue)]
+mean_Table_U <- unique(Table_U[, .(AGI, mean_U, tissue)], by = c("AGI", "tissue"))
+mean_Table_U$mean_U <- round(mean_Table_U$mean_U, 2)
+Table_U <- Table_U[, .(AGI, tissue, rep, perc_U)]
+rm(all_combinations)
+```
+## percent short reads 
+```{r short reads}
+Table_short <- C50[, .(total_reads = .N, short_reads = sum(polya_size < 30, na.rm = TRUE), perc_short = 100 * sum(polya_size < 30, na.rm = TRUE) / .N
+), by = .(AGI, rep, tissue)]
+Table_short[, mean_short := mean(perc_short, na.rm = TRUE), by = .(AGI, tissue)]
+mean_Table_short <- unique(Table_short[, .(AGI, mean_short, tissue)], by = c("AGI", "tissue"))
+mean_Table_short$mean_short <- round(mean_Table_short$mean_short, 2)
+Table_short <- Table_short[, .(AGI, tissue, rep, perc_short)]
+```
+## percent medium reads 
+```{r mediumr reads}
+Table_medium <- C50[, .(total_reads = .N, medium_reads = sum(polya_size >= 35 & polya_size <= 60 , na.rm = TRUE), perc_medium = 100 * sum(polya_size >= 35 & polya_size <= 60, na.rm = TRUE) / .N
+), by = .(AGI, rep, tissue)]
+Table_medium[, mean_medium := mean(perc_medium, na.rm = TRUE), by = .(AGI, tissue)]
+mean_Table_medium <- unique(Table_medium[, .(AGI, mean_medium, tissue)], by = c("AGI", "tissue"))
+mean_Table_medium$mean_medium <- round(mean_Table_medium$mean_medium, 2)
+Table_medium <- Table_medium[, .(AGI, tissue, rep, perc_medium)]
+```
+## percent long reads
+```{r long reads}
+Table_long <- C50[, .(total_reads = .N, long_reads = sum(polya_size > 60 , na.rm = TRUE), perc_long = 100 * sum(polya_size > 60, na.rm = TRUE) / .N
+), by = .(AGI, rep, tissue)]
+Table_long[, mean_long := mean(perc_long, na.rm = TRUE), by = .(AGI, tissue)]
+mean_Table_long <- unique(Table_long[, .(AGI, mean_long, tissue)], by = c("AGI", "tissue"))
+mean_Table_long$mean_long <- round(mean_Table_long$mean_long, 2)
+Table_long <- Table_long[, .(AGI, tissue, rep, perc_long)]
+```
+## RPM
+```{r Table_reads}
+Table_reads<- C50[, .(AGI_reads = .N),  by = .(AGI, rep, tissue)]
+total <- C50[, .(total= .N), by = .(rep, tissue)]
+Table_reads <- merge(Table_reads, total, by = c("rep", "tissue"))
+Table_reads[, RPM := 1000000 *AGI_reads/total]
+Table_reads[, mean_RPM := mean(RPM, na.rm = TRUE), by = .(AGI, tissue)]
+mean_Table_reads <- unique(Table_reads[, .(AGI, mean_RPM, tissue)], by = c("AGI", "tissue"))
+mean_Table_reads$mean_RPM <- round(mean_Table_reads$mean_RPM, 2)
+Table_reads <- Table_reads[, .(AGI, tissue, rep, AGI_reads, RPM)]
+```
+## median poly a size
+```{r Table_median}
+Table_median <- C50[, .(median = median(polya_size)), by = .(AGI, rep, tissue)]
+Table_median[, mean_median := mean(median, na.rm = TRUE), by = .(AGI, tissue)]
+mean_Table_median <- unique(Table_median[, .(AGI, mean_median, tissue)], by = c("AGI", "tissue"))
+mean_Table_median$mean_median <- round(mean_Table_median$mean_median, 2)
+Table_median <- Table_median[, .(AGI, tissue, rep, median)]
+```
+## peaks per replicate
+```{r density by Agi and rep}
+DT_density <- C50[, .(density_data = list(density(polya_size, bw = "sj", adjust = 1))), by = .(AGI, tissue, rep)]
+
+# Extract x and y from density_data list column
+density_table <- DT_density[, {
+  x <- density_data[[1]]$x
+  y <- density_data[[1]]$y
+  .(x, y)
+}, by = .(AGI, tissue, rep)]
+
+# calculate density and retrieve the results  to a table
+all_1_pooled_peaks<- density_table[, {maxima <- find_first_peak(x, y)}, by = .(AGI, tissue, rep)]
+all_1_pooled_peaks[, peak_1:= round(x, 0)]
+all_1_pooled_peaks[,x := NULL]
+
+all_p_pooled_peaks <- density_table[, {maxima <- find_single_peak(x, y)}, by = .(AGI, tissue, rep)]
+all_p_pooled_peaks[, peak_p := round(peak_x, 0)]
+all_p_pooled_peaks[, peak_x := NULL]
+
+Table_peaks <- merge(all_1_pooled_peaks, all_p_pooled_peaks, by = c("AGI", "tissue","rep"))
+Table_peaks <- Table_peaks[, .(AGI, tissue, rep, peak_1, peak_p)]
+rm(all_1_pooled_peaks, all_p_pooled_peaks, DT_density, density_table)
+```
+## profile classification
+```{r profile_1}
+Table_peaks[, profile_1 := fcase(
+  peak_p < 35, "short",
+  peak_p >= 35 & peak_p <= 60, "inter",
+  peak_p > 60, "long"
+)]
+Table_peaks[, profile_1 := factor(profile_1, levels  = c("short", "inter", "long"))]
+
+```
+## Table_AGI
+```{r Table_AGI}
+
+Table_AGI <- merge(Table_short, Table_medium, by = c("AGI", "tissue", "rep"))
+Table_AGI <- merge(Table_AGI, Table_long, by = c("AGI", "tissue", "rep"))
+Table_AGI <- merge(Table_AGI, Table_reads, by = c("AGI", "tissue", "rep"))
+Table_AGI <- merge(Table_AGI, Table_median, by = c("AGI", "tissue", "rep"))
+Table_AGI <- merge(Table_AGI, Table_peaks, by = c("AGI", "tissue", "rep"))
+Table_AGI <- merge(Table_AGI, Table_U, by = c("AGI", "tissue", "rep"))
+Table_AGI <-Table_AGI[, .(AGI, tissue, rep, median, perc_short, perc_medium, perc_long, perc_U, RPM, peak_1, peak_p,  profile_1)]
+```
+```{r write}
+fwrite(Table_AGI, file = "R10_seedlings_WT_Table_AGI.csv")
+```
+
+# mean_table_AGI
+```{r density by Agi}
+DT_density <- C50[, .(density_data = list(density(polya_size, bw = "sj", adjust = 1))), by = .(AGI, tissue)]
+
+# Extract x and y from density_data list column
+density_table <- DT_density[, {
+  x <- density_data[[1]]$x
+  y <- density_data[[1]]$y
+  .(x, y)
+}, by = .(AGI, tissue)]
+
+# calculate density and retrieve the results  to a table
+all_1_pooled_peaks<- density_table[, {maxima <- find_first_peak(x, y)}, by = .(AGI, tissue)]
+all_1_pooled_peaks[, peak_1:= round(x, 0)]
+all_1_pooled_peaks[,x := NULL]
+
+all_p_pooled_peaks <- density_table[, {maxima <- find_single_peak(x, y)}, by = .(AGI, tissue)]
+all_p_pooled_peaks[, peak_p := round(peak_x, 0)]
+all_p_pooled_peaks[, peak_x := NULL]
+
+mean_Table_peaks <- merge(all_1_pooled_peaks, all_p_pooled_peaks, by = c("AGI", "tissue"))
+mean_Table_peaks <- mean_Table_peaks[, .(AGI, tissue, peak_1, peak_p)]
+
+
+rm(all_1_pooled_peaks, all_p_pooled_peaks, DT_density, density_table)
+```
+```{r profile_p}
+mean_Table_peaks[, profile_p := fcase(
+  peak_p < 35, "short",
+  peak_p >= 35 & peak_p <= 60, "inter",
+  peak_p > 60, "long"
+)]
+mean_Table_peaks[, profile_p := factor(profile_p, levels  = c("short", "inter", "long"))]
+```
+```{r mean Table_AGI}
+mean_Table_AGI <- merge(mean_Table_short, mean_Table_medium, by = c("AGI", "tissue"))
+mean_Table_AGI <- merge(mean_Table_AGI, mean_Table_long, by = c("AGI", "tissue"))
+mean_Table_AGI <- merge(mean_Table_AGI, mean_Table_median, by = c("AGI", "tissue"))
+mean_Table_AGI <- merge(mean_Table_AGI, mean_Table_reads, by = c("AGI", "tissue"))
+mean_Table_AGI <- merge(mean_Table_AGI, mean_Table_peaks, by = c("AGI", "tissue"))
+mean_Table_AGI <- merge(mean_Table_AGI, mean_Table_U, by = c("AGI", "tissue"))
+mean_Table_AGI <- merge(mean_Table_AGI, mRNA_size, by = c("AGI"), all.y = FALSE)
+```
+```{r write}
+fwrite(mean_Table_AGI, file = "R10_seedlings_WT_mean_Table_AGI.csv")
+```
+```{r top40}
+ordered_AGIs <- mean_Table_AGI[order(-mean_RPM), AGI]
+top40 <- ordered_AGIs[1:40]
+ordered_AGIs <- mean_Table_AGI[order(mean_RPM), AGI]
+low40 <- ordered_AGIs[1:40]
+global_mean <- mean(mean_Table_AGI$mean_RPM)
+
+closest40 <- mean_Table_AGI[
+  order(abs(mean_RPM - global_mean)),
+  AGI
+][1:40]
+```
+```{r clean}
+rm(mean_Table_long, mean_Table_short, mean_Table_median, mean_Table_medium, mean_Table_peaks, mean_Table_reads, mean_Table_U)
+rm(Table_long, Table_median, Table_peaks, Table_reads, Table_short, Table_medium, Table_U)
+rm(list = ls()[sapply(ls(), function(x) inherits(get(x), "gg"))])
+rm(total, grouping_vars)
+```
+
+
+# poly a distri
+```{r weighted distri}
+
+all_combinations <- CJ(
+  tissue = unique(C50$tissue),
+  rep = unique(C50$rep),
+  polya_size = unique(C50$polya_size))
+
+weighted_data <-C50[, .(weighted_n = sum(weight)), by = .(tissue, polya_size, rep)]
+weighted_data <- merge(all_combinations, weighted_data, by = c("tissue", "rep", "polya_size"), all.x = TRUE)
+weighted_data <- weighted_data[is.na(weighted_n), weighted_n := 0]
+weighted_data[, `:=` (total_weighted = sum(weighted_n), perc = 100 * (weighted_n) / sum(weighted_n)), by = .(tissue, rep)]
+weighted_data[, mean:=mean(perc, na.rm = T), by = .(tissue, polya_size)]
+weighted_data <- weighted_data[!is.na(mean)]
+# Function to calculate smoothed values
+precalc_smooth <- function(data, x_col, y_col, group_cols, span = 0.025) {
+  smoothed_data <- data[, {
+    fit <- loess(get(y_col) ~ get(x_col), 
+                 data = .SD, 
+                 span = span, 
+                 control = loess.control(surface = "direct")) 
+    smooth <- predict(fit)
+    .(x = get(x_col), y = smooth)
+  }, by = group_cols]
+  return(smoothed_data)
+}
+
+grouping_vars <- c("tissue")  
+
+weighted_data_smooth <- precalc_smooth(weighted_data, "polya_size", "mean", grouping_vars)
+```
+```{r pdf}
+weighted <- ggplot() +
+ geom_point(data= weighted_data, aes(x = polya_size, y= perc, color = tissue), size = 0.05)+
+  geom_area(data = weighted_data_smooth, aes(x = x, y = y, fill = tissue), alpha = 0.3, position = "identity") +  
+
+#  geom_vline(xintercept= c(20, 43), linetype = "dashed", color = "grey")+
+  
+  scale_fill_manual(values = tissue_colors)+
+  scale_color_manual(values = tissue_colors)+
+  scale_x_continuous(expand = c(0,0),
+    limits = c(9, 200),
+    breaks = custom_breaks,
+    labels = every_nth(custom_breaks, 5, inverse = TRUE)) +
+   scale_y_continuous(breaks = scales::pretty_breaks(n = 3))+     
+  guides(fill = guide_legend(override.aes = list(size = 3, alpha = 0.4))) +
+
+ 
+  theme(legend.position = "none")+
+  
+  labs(
+  #title = "R10_stem_seedlings, changes of shoot short profiles",
+   # subtitle = "lines at 20, 43",
+    x = "polyA tail size",
+    y = "frequency"
+  )
+
+weighted
+ggsave(filename = "pdf_R10_seedlings_WT_C50_distri.pdf", weighted, width =8, height = 5, dpi = 1200)
+```
+
+```{r info profile }
+info_profile <- Table_AGI[, .(AGI, rep, profile_1)]
+C50p <- merge(C50, info_profile, by = c("AGI", "rep"))
+```
+```{r distri profile split}
+
+all_combinations <- CJ(
+  tissue = unique(C50p$tissue),
+  rep = unique(C50p$rep),
+  profile_1 = unique(C50p$profile_1),
+  polya_size = unique(C50p$polya_size))
+
+weighted_data <-C50p[, .(weighted_n = sum(weight)), by = .(tissue, polya_size, rep, profile_1)]
+weighted_data <- merge(all_combinations, weighted_data, by = c("tissue", "rep", "polya_size", "profile_1"), all.x = TRUE)
+weighted_data <- weighted_data[is.na(weighted_n), weighted_n := 0]
+weighted_data[, `:=` (total_weighted = sum(weighted_n), perc = 100 * (weighted_n) / sum(weighted_n)), by = .(tissue, rep, profile_1)]
+weighted_data[, mean:=mean(perc, na.rm = T), by = .(tissue, polya_size, profile_1)]
+weighted_data <- weighted_data[!is.na(mean)]
+# Function to calculate smoothed values
+precalc_smooth <- function(data, x_col, y_col, group_cols, span = 0.025) {
+  smoothed_data <- data[, {
+    fit <- loess(get(y_col) ~ get(x_col), 
+                 data = .SD, 
+                 span = span, 
+                 control = loess.control(surface = "direct")) 
+    smooth <- predict(fit)
+    .(x = get(x_col), y = smooth)
+  }, by = group_cols]
+  return(smoothed_data)
+}
+
+grouping_vars <- c("tissue", "profile_1")  
+
+weighted_data_smooth <- precalc_smooth(weighted_data, "polya_size", "mean", grouping_vars)
+```
+```{r pdf}
+weighted <- ggplot() +
+ geom_point(data= weighted_data, aes(x = polya_size, y= perc, color = profile_1), size = 0.05)+
+  geom_area(data = weighted_data_smooth, aes(x = x, y = y, fill = profile_1), alpha = 0.3, position = "identity") +  
+
+#  geom_vline(xintercept= c(20, 43), linetype = "dashed", color = "grey")+
+  
+  scale_fill_viridis_d(option = "D", direction = -1, begin = 0.15, end = 0.8)+
+  scale_color_viridis_d(option = "D", direction = -1, begin = 0.15, end = 0.8)+
+  scale_x_continuous(expand = c(0,0),
+    limits = c(9, 200),
+    breaks = custom_breaks,
+    labels = every_nth(custom_breaks, 5, inverse = TRUE)) +
+   scale_y_continuous(breaks = scales::pretty_breaks(n = 3))+     
+  guides(fill = guide_legend(override.aes = list(size = 3, alpha = 0.4))) +
+
+ 
+  theme(legend.position = "none")+
+  
+  labs(
+  #title = "R10_stem_seedlings, changes of shoot short profiles",
+   # subtitle = "lines at 20, 43",
+    x = "polyA tail size",
+    y = "frequency"
+  )
+
+weighted
+ggsave(filename = "pdf_R10_seedling_WT_C50_distri_profile_split.pdf", weighted, width =8, height = 5, dpi = 1200)
+```
+
+# poly a distri rosette
+```{r fread}
+rosette <- fread("/Users/hlange/Desktop/bioinfo/flepseq_preprocessing_paper/read_tables_paper/R10_rosette_WT_tailed.csv")
+check <- rosette[, .(n=.N), by = .(tissue, rep, run)]
+```
+```{r C50 rosette}
+grouped_counts <- rosette[, .N, by = .(AGI, rep)]
+filtered_counts <- grouped_counts[N >= 50]
+unique_combinations <- uniqueN(grouped_counts, by = "rep")
+list_C50_rosette <- unique(filtered_counts[, if (.N == unique_combinations) .SD, by = AGI]$AGI)
+print(length(list_C50_rosette))
+rm(filtered_counts, unique_combinations)
+C50r <- rosette[AGI %in% list_C50_rosette]
+C50r[, weight := 1/.N, by = .(AGI, rep)]
+filtered_counts <- grouped_counts[N >= 150]
+unique_combinations <- uniqueN(grouped_counts, by = "rep")
+list_C150_rosette <- unique(filtered_counts[, if (.N == unique_combinations) .SD, by = AGI]$AGI)
+rm(filtered_counts, grouped_counts, unique_combinations)
+```
+```{r weighted distri}
+
+all_combinations <- CJ(
+  tissue = unique(C50r$tissue),
+  rep = unique(C50r$rep),
+  polya_size = unique(C50r$polya_size))
+
+weighted_data <-C50r[, .(weighted_n = sum(weight)), by = .(tissue, polya_size, rep)]
+weighted_data <- merge(all_combinations, weighted_data, by = c("tissue", "rep", "polya_size"), all.x = TRUE)
+weighted_data <- weighted_data[is.na(weighted_n), weighted_n := 0]
+weighted_data[, `:=` (total_weighted = sum(weighted_n), perc = 100 * (weighted_n) / sum(weighted_n)), by = .(tissue, rep)]
+weighted_data[, mean:=mean(perc, na.rm = T), by = .(tissue, polya_size)]
+weighted_data <- weighted_data[!is.na(mean)]
+# Function to calculate smoothed values
+precalc_smooth <- function(data, x_col, y_col, group_cols, span = 0.025) {
+  smoothed_data <- data[, {
+    fit <- loess(get(y_col) ~ get(x_col), 
+                 data = .SD, 
+                 span = span, 
+                 control = loess.control(surface = "direct")) 
+    smooth <- predict(fit)
+    .(x = get(x_col), y = smooth)
+  }, by = group_cols]
+  return(smoothed_data)
+}
+
+grouping_vars <- c("tissue")  
+
+weighted_data_smooth <- precalc_smooth(weighted_data, "polya_size", "mean", grouping_vars)
+```
+```{r pdf}
+weighted <- ggplot() +
+ geom_point(data= weighted_data, aes(x = polya_size, y= perc, color = tissue), size = 0.05)+
+  geom_area(data = weighted_data_smooth, aes(x = x, y = y, fill = tissue), alpha = 0.3, position = "identity") +  
+
+#  geom_vline(xintercept= c(20, 43), linetype = "dashed", color = "grey")+
+  
+  scale_fill_manual(values = tissue_colors)+
+  scale_color_manual(values = tissue_colors)+
+  scale_x_continuous(expand = c(0,0),
+    limits = c(9, 200),
+    breaks = custom_breaks,
+    labels = every_nth(custom_breaks, 5, inverse = TRUE)) +
+   scale_y_continuous(breaks = scales::pretty_breaks(n = 3))+     
+  guides(fill = guide_legend(override.aes = list(size = 3, alpha = 0.4))) +
+
+ 
+  theme(legend.position = "none")+
+  
+  labs(
+  #title = "R10_stem_seedlings, changes of shoot short profiles",
+   # subtitle = "lines at 20, 43",
+    x = "polyA tail size",
+    y = "frequency"
+  )
+
+weighted
+ggsave(filename = "pdf_R10_rosette_WT_C50_distri.pdf", weighted, width =8, height = 5, dpi = 1200)
+```
+
+# barplot profile count seedlings
+```{r barplot profile count C50}
+Count <- Table_AGI[, .N, by = .(tissue, profile_1, rep)]
+barplot<- ggplot(Count, aes(x = rep, y = N, fill = profile_1)) +
+  geom_bar(stat = "identity", linewidth = 1.2) +
+  facet_wrap(~tissue)+
+  scale_fill_viridis_d(option = "D", direction = -1, begin = 0.15, end = 0.8)+
+  #theme_classic(base_size = 18)+
+  theme(legend.position = "right")+
+  theme(axis.text.x = element_blank())+
+ 
+  labs(
+
+    y = "Nr AGIs",
+    x = ""
+  )
+
+barplot
+ggsave(filename ="pdf_R10_seedlings_barplot_profile_count.pdf", barplot, width = 6, height = 6, dpi = 1200)
+```
+
+# make quantiles from RPM
+```{r match AGI}
+RPM <- mean_Table_AGI[, .(AGI, mean_RPM)]
+n_cuts <- 5  # You can change this to any integer ≥ 1
+
+RPM[, RPM_quant := cut(mean_RPM, breaks = quantile(mean_RPM, probs = seq(0, 1, length.out = n_cuts + 1), na.rm = TRUE),  include.lowest = TRUE, labels = FALSE)]
+
+quantile_limits <- quantile(
+  RPM$mean_RPM,
+  probs = seq(0, 1, length.out = n_cuts + 1),
+  na.rm = TRUE
+)
+quantile_limits
+```
+quantile_limits
+   0%       20%       40%       60%       80%      100% 
+ 12.780    23.890    36.354    59.982   125.436 35291.530 
+
+```{r merge info to C50 and Table_AGI}
+
+info_RPM <- RPM[, .(AGI, RPM_quant)]
+info_RPM[, RPM_quant := as.character(RPM_quant)]
+count <- info_RPM[, .(N=.N), by = "RPM_quant"]
+
+C50_rpm <- merge(C50, info_RPM[,.(AGI, RPM_quant)], by = "AGI")
+Table_AGI <- merge(Table_AGI, info_RPM, by = "AGI")
+mean_Table_AGI <- merge(mean_Table_AGI, info_RPM, by = "AGI")
+```
+## weighted distri by RPM quantiles
+```{r distri}
+all_combinations <- CJ(
+  rep = unique(C50_rpm$rep),
+  RPM_quant = unique(C50_rpm$RPM_quant),
+  polya_size = unique(C50_rpm$polya_size))
+
+weighted_data <-C50_rpm[, .(weighted_n = sum(weight)), by = .(polya_size, rep,RPM_quant)]
+weighted_data <- merge(all_combinations, weighted_data, by = c("rep", "polya_size", "RPM_quant"), all.x = TRUE)
+weighted_data <- weighted_data[is.na(weighted_n), weighted_n := 0]
+weighted_data[, `:=` (total_weighted = sum(weighted_n), perc = 100 * (weighted_n) / sum(weighted_n)), by = .(rep,RPM_quant)]
+weighted_data[, mean:=mean(perc, na.rm = T), by = .(polya_size,RPM_quant)]
+
+# Function to calculate smoothed values
+precalc_smooth <- function(data, x_col, y_col, group_cols, span = 0.025) {
+  smoothed_data <- data[, {
+    fit <- loess(get(y_col) ~ get(x_col), 
+                 data= .SD, 
+                 span = span, 
+                 control = loess.control(surface = "direct"))  # Add this!
+    smooth <- predict(fit)
+    .(x = get(x_col), y = smooth)
+  }, by = group_cols]
+  return(smoothed_data)
+}
+
+grouping_vars <- "RPM_quant" 
+
+weighted_data_smooth <- precalc_smooth(weighted_data, "polya_size", "mean", grouping_vars)
+```
+```{r weighted distri RMP split}
+weighted <- ggplot() +
+ 
+  geom_area(data= weighted_data_smooth, aes(x = x, y = y, color = RPM_quant, fill =RPM_quant), alpha = 0.2, position = "identity") +  
+  #geom_text(data= Count, aes(label = N), x = 160, y = 0.9, size = 6)+
+  #geom_vline(xintercept= c(20, 43), linetype = "dashed", color = "red")+
+  
+ scale_fill_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+  scale_color_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+  scale_x_continuous(expand = c(0,0),
+    limits = c(9, 200),
+    breaks = custom_breaks,
+    labels = every_nth(custom_breaks, 6, inverse = TRUE)
+  ) +
+  scale_y_continuous(limits = c(0, 1), breaks = scales::pretty_breaks(n = 3))+
+  guides(fill = guide_legend(override.aes = list(size = 3, alpha = 0.4))) +
+ 
+ 
+  theme(legend.position = "none")+
+  
+  labs(
+    #title = "weighted distri",
+    #subtitle = "Sorensen",
+    x = "polyA tail size",
+    y = "frequency"
+  )
+
+weighted
+ggsave(filename = "pdf_R10_seedlings_WT_weighted_split_RPM_quant.pdf", weighted, width =8, height = 5, dpi = 1200)
+```
+```{r clean}
+rm(weighted_data, weighted_data_smooth, all_combinations)
+rm(list = ls()[sapply(ls(), function(x) inherits(get(x), "gg"))])
+```
+
+
+# make quantiles from RPM only upper 20 %
+```{r match AGI}
+RPM_2 <- mean_Table_AGI[mean_RPM > 125, .(AGI, mean_RPM)]
+n_cuts <- 5  # You can change this to any integer ≥ 1
+
+RPM_2[, RPM_quant_2 := cut(mean_RPM, breaks = quantile(mean_RPM, probs = seq(0, 1, length.out = n_cuts + 1), na.rm = TRUE),  include.lowest = TRUE, labels = FALSE)]
+
+quantile_limits <- quantile(
+  RPM_2$mean_RPM,
+  probs = seq(0, 1, length.out = n_cuts + 1),
+  na.rm = TRUE
+)
+quantile_limits
+```
+    0%       20%       40%       60%       80%      100% 
+ 125.100   158.744   212.154   300.094   551.922 35291.530 
+
+```{r merge info to C50 and Table_AGI}
+
+info_RPM <- RPM_2[, .(AGI, RPM_quant_2)]
+info_RPM[, RPM_quant_2 := as.character(RPM_quant_2)]
+count <- info_RPM[, .(N=.N), by = "RPM_quant_2"]
+
+C50_2 <- merge(C50, info_RPM[,.(AGI, RPM_quant_2)], by = "AGI", all.y= FALSE)
+Table_AGI_2 <- merge(Table_AGI, info_RPM, by = "AGI", all.y= FALSE)
+mean_Table_AGI_2 <- merge(mean_Table_AGI, info_RPM, by = "AGI", all.y= FALSE)
+```
+## weighted distri by RPM quantiles
+```{r distri}
+all_combinations <- CJ(
+  rep = unique(C50_2$rep),
+  RPM_quant_2 = unique(C50_2$RPM_quant_2),
+  polya_size = unique(C50_2$polya_size))
+
+weighted_data <-C50_2[, .(weighted_n = sum(weight)), by = .(polya_size, rep,RPM_quant_2)]
+weighted_data <- merge(all_combinations, weighted_data, by = c("rep", "polya_size", "RPM_quant_2"), all.x = TRUE)
+weighted_data <- weighted_data[is.na(weighted_n), weighted_n := 0]
+weighted_data[, `:=` (total_weighted = sum(weighted_n), perc = 100 * (weighted_n) / sum(weighted_n)), by = .(rep,RPM_quant_2)]
+weighted_data[, mean:=mean(perc, na.rm = T), by = .(polya_size,RPM_quant_2)]
+
+# Function to calculate smoothed values
+precalc_smooth <- function(data, x_col, y_col, group_cols, span = 0.025) {
+  smoothed_data <- data[, {
+    fit <- loess(get(y_col) ~ get(x_col), 
+                 data= .SD, 
+                 span = span, 
+                 control = loess.control(surface = "direct"))  # Add this!
+    smooth <- predict(fit)
+    .(x = get(x_col), y = smooth)
+  }, by = group_cols]
+  return(smoothed_data)
+}
+
+grouping_vars <- "RPM_quant_2" 
+
+weighted_data_smooth <- precalc_smooth(weighted_data, "polya_size", "mean", grouping_vars)
+```
+```{r weighted distri RMP split}
+weighted <- ggplot() +
+ 
+  geom_area(data= weighted_data_smooth, aes(x = x, y = y, color = RPM_quant_2, fill =RPM_quant_2), alpha = 0.2, position = "identity") +  
+  #geom_text(data= Count, aes(label = N), x = 160, y = 0.9, size = 6)+
+  #geom_vline(xintercept= c(20, 43), linetype = "dashed", color = "red")+
+  
+ scale_fill_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+  scale_color_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+  scale_x_continuous(expand = c(0,0),
+    limits = c(9, 200),
+    breaks = custom_breaks,
+    labels = every_nth(custom_breaks, 6, inverse = TRUE)
+  ) +
+  scale_y_continuous(limits = c(0, 1), breaks = scales::pretty_breaks(n = 3))+
+  guides(fill = guide_legend(override.aes = list(size = 3, alpha = 0.4))) +
+ 
+ 
+  theme(legend.position = "none")+
+  
+  labs(
+    #title = "weighted distri",
+    #subtitle = "Sorensen",
+    x = "polyA tail size",
+    y = "frequency"
+  )
+
+weighted
+ggsave(filename = "pdf_R10_seedlings_WT_weighted_split_RPM_quant_2.pdf", weighted, width =8, height = 5, dpi = 1200)
+```
+```{r clean}
+rm(weighted_data, weighted_data_smooth, all_combinations)
+rm(list = ls()[sapply(ls(), function(x) inherits(get(x), "gg"))])
+```
+
+```{r box short}
+box <- ggplot(Table_AGI_2, aes(x = rep, y = perc_short, color =RPM_quant_2)) +
+  geom_boxplot(position = position_dodge(0.9), outlier.shape = NA,  fill = "white",  width=0.5, linewidth = 1, alpha=0.4, notch=F)+
+  facet_wrap(~RPM_quant_2, nrow = 1)+
+  scale_y_continuous(limits = c(0, 35))+
+  scale_fill_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+  scale_color_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+   theme_no_grid()+
+   theme(axis.title.x = element_blank())+
+   theme (legend.position="none")+
+  
+labs(
+     #x="",
+     y= "% short reads")
+box
+ggsave(filename ="pdf_R10_seedlings_WT_box_short_RPM_split_2.pdf", box, width = 6, height = 6, dpi = 1200)
+
+```
+```{r box medium}
+box <- ggplot(Table_AGI_2, aes(x = rep, y = perc_medium, color = RPM_quant_2)) +
+  geom_boxplot(position = position_dodge(0.9), outlier.shape = NA,  fill = "white",  width=0.5, linewidth = 1, alpha=0.4, notch=F)+
+  facet_wrap(~ RPM_quant_2, nrow = 1)+
+  scale_y_continuous(limits = c(0, 35))+
+  scale_fill_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+  scale_color_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+   theme_no_grid()+
+   theme(axis.title.x = element_blank())+
+   theme (legend.position="none")+
+  
+labs(
+     #x="",
+     y= "% medium")
+box
+ggsave(filename ="pdf_R10_seedlings_WT_box_medium_RPMsplit_2.pdf", box, width = 6, height = 6, dpi = 1200)
+
+```
+
+
+
+# half life Sorensen
+
+```{r fread HLSorensen}
+
+# formula to convert published alpha values to half-life in min: decay$half_life <- log(2)/decay$alpha_sov
+
+HL_Sorensen_all <- fread("/Users/hlange/Desktop/bioinfo/published_data/Tables_pietro/Table_5Q_Sorenson.txt")
+setnames(HL_Sorensen_all, "Half_life", "mean_HL")
+
+
+plot <- ggplot(HL_Sorensen_all, aes(mean_HL))+
+  geom_density()+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red")+
+  
+ # scale_x_continuous(limits = c(0,3))+
+  #scale_y_continuous(limits = c(0,3))+
+  theme_classic(base_size = 15)+
+  theme (legend.position="none")+
+
+  labs(title = "HL_Sorensen_all.pdf")
+
+  
+plot
+```
+```{r match AGI}
+HL_Sorensen <- unique(HL_Sorensen_all[AGI %in% Table_AGI$AGI], by = "AGI")
+n_cuts <- 5  # You can change this to any integer ≥ 1
+
+HL_Sorensen[, Sorensen := cut(mean_HL, breaks = quantile(mean_HL, probs = seq(0, 1, length.out = n_cuts + 1), na.rm = TRUE),  include.lowest = TRUE, labels = FALSE)]
+
+quantile_limits <- quantile(
+  HL_Sorensen$mean_HL,
+  probs = seq(0, 1, length.out = n_cuts + 1),
+  na.rm = TRUE
+)
+quantile_limits
+HL_Sorensen[, Sorensen := as.character(Sorensen)]
+HL_Sorensen <- merge(HL_Sorensen, mRNA_size, by = "AGI")
+```
+
+quantile_limits
+         0%         20%         40%         60%         80%        100% 
+   3.855295   57.672970   92.149672  144.921279  259.505169 1435.268596 
+```{r get info}
+info_Sorensen <- HL_Sorensen[, .(AGI, mean_HL, Sorensen)]
+info_Sorensen[, Sorensen := as.character(Sorensen)]
+count <- info_Sorensen[, .(N=.N), by = "Sorensen"]
+```
+```{r merge info_HL to C50 and Table_AGI}
+C50_S <- merge(C50, info_Sorensen[,.(AGI, Sorensen)], by = "AGI", all.y = FALSE)
+Table_AGI_S <- merge(Table_AGI, info_Sorensen, by = "AGI",  all.y = FALSE)
+mean_Table_AGI_S <- merge(mean_Table_AGI, info_Sorensen, by = "AGI",  all.y = FALSE)
+```
+
+
+## weighted distri by Sorensen HL quantiles
+```{r distri}
+all_combinations <- CJ(
+  rep = unique(C50_S$rep),
+  Sorensen = unique(C50_S$Sorensen),
+  polya_size = unique(C50_S$polya_size))
+
+weighted_data <-C50_S[, .(weighted_n = sum(weight)), by = .(polya_size, rep,Sorensen)]
+weighted_data <- merge(all_combinations, weighted_data, by = c("rep", "polya_size", "Sorensen"), all.x = TRUE)
+weighted_data <- weighted_data[is.na(weighted_n), weighted_n := 0]
+weighted_data[, `:=` (total_weighted = sum(weighted_n), perc = 100 * (weighted_n) / sum(weighted_n)), by = .(rep,Sorensen)]
+weighted_data[, mean:=mean(perc, na.rm = T), by = .(polya_size,Sorensen)]
+
+# Function to calculate smoothed values
+precalc_smooth <- function(data, x_col, y_col, group_cols, span = 0.025) {
+  smoothed_data <- data[, {
+    fit <- loess(get(y_col) ~ get(x_col), 
+                 data= .SD, 
+                 span = span, 
+                 control = loess.control(surface = "direct"))  # Add this!
+    smooth <- predict(fit)
+    .(x = get(x_col), y = smooth)
+  }, by = group_cols]
+  return(smoothed_data)
+}
+
+grouping_vars <- "Sorensen" 
+
+weighted_data_smooth <- precalc_smooth(weighted_data, "polya_size", "mean", grouping_vars)
+```
+
+```{r weighted distri overlay}
+weighted <- ggplot() +
+ 
+  geom_area(data= weighted_data_smooth, aes(x = x, y = y, color =Sorensen, fill =Sorensen), alpha = 0.2, position = "identity") +  
+  #geom_text(data= Count, aes(label = N), x = 160, y = 0.9, size = 6)+
+  #geom_vline(xintercept= c(20, 43), linetype = "dashed", color = "red")+
+  
+ scale_fill_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+  scale_color_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+  scale_x_continuous(expand = c(0,0),
+    limits = c(9, 200),
+    breaks = custom_breaks,
+    labels = every_nth(custom_breaks, 6, inverse = TRUE)
+  ) +
+  scale_y_continuous(limits = c(0, NA), breaks = scales::pretty_breaks(n = 3))+
+  guides(fill = guide_legend(override.aes = list(size = 3, alpha = 0.4))) +
+ 
+ 
+  theme(legend.position = "none")+
+  
+  labs(
+    #title = "weighted distri",
+    #subtitle = "Sorensen",
+    x = "polyA tail size",
+    y = "frequency"
+  )
+
+weighted
+ggsave(filename = "pdf_R10_seedlings_WT_weighted_split_Sorensen.pdf", weighted, width =8, height = 5, dpi = 1200)
+```
+```{r clean}
+rm(weighted_data, weighted_data_smooth, all_combinations)
+rm(list = ls()[sapply(ls(), function(x) inherits(get(x), "gg"))])
+```
+
+```{r box short}
+box <- ggplot(Table_AGI_S, aes(x = rep, y = perc_short, color =Sorensen)) +
+  geom_boxplot(position = position_dodge(0.9), outlier.shape = NA,  fill = "white",  width=0.5, linewidth = 1, alpha=0.4, notch=F)+
+  facet_wrap(~Sorensen, nrow = 1)+
+  scale_y_continuous(limits = c(0, 35))+
+  scale_fill_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+  scale_color_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+   theme_no_grid()+
+   theme(axis.title.x = element_blank())+
+   theme (legend.position="none")+
+  
+labs(
+     #x="",
+     y= "% short reads")
+box
+ggsave(filename ="pdf_R10_seedlings_WT_box_short_sorensen.pdf", box, width = 6, height = 6, dpi = 1200)
+
+```
+```{r box medium}
+box <- ggplot(Table_AGI_S, aes(x = rep, y = perc_medium, color = Sorensen)) +
+  geom_boxplot(position = position_dodge(0.9), outlier.shape = NA,  fill = "white",  width=0.5, linewidth = 1, alpha=0.4, notch=F)+
+  facet_wrap(~ Sorensen, nrow = 1)+
+  scale_y_continuous(limits = c(0, 35))+
+  scale_fill_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+  scale_color_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+   theme_no_grid()+
+   theme(axis.title.x = element_blank())+
+   theme (legend.position="none")+
+  
+labs(
+     #x="",
+     y= "% medium")
+box
+ggsave(filename ="pdf_R10_seedlings_WT_box_medium_Sorensen.pdf", box, width = 6, height = 6, dpi = 1200)
+
+```
+
+
+## make quantiles from HL lower 20 %
+```{r match AGI}
+Sorensen_2 <- mean_Table_AGI_S[mean_HL < 57.672970, .(AGI, mean_HL)]
+n_cuts <- 5  # You can change this to any integer ≥ 1
+
+Sorensen_2[, Sorensen_2 := cut(mean_HL, breaks = quantile(mean_HL, probs = seq(0, 1, length.out = n_cuts + 1), na.rm = TRUE),  include.lowest = TRUE, labels = FALSE)]
+
+quantile_limits <- quantile(
+  Sorensen_2$mean_HL,
+  probs = seq(0, 1, length.out = n_cuts + 1),
+  na.rm = TRUE
+)
+quantile_limits
+```
+       0%       20%       40%       60%       80%      100% 
+ 3.855295 24.360361 33.694541 41.796053 50.177015 57.669696 
+
+```{r merge info to C50 and Table_AGI}
+
+info_Sorensen_2 <- Sorensen_2[, .(AGI, mean_HL, Sorensen_2)]
+info_Sorensen_2[, Sorensen_2 := as.character(Sorensen_2)]
+count <- info_Sorensen[, .(N=.N), by = "Sorensen_2"]
+
+C50_S_2 <- merge(C50, info_Sorensen_2[,.(AGI, Sorensen_2)], by = "AGI", all.y= FALSE)
+Table_AGI_S_2 <- merge(Table_AGI, info_Sorensen, by = "AGI", all.y= FALSE)
+mean_Table_AGI_S_2 <- merge(mean_Table_AGI,info_Sorensen_2, by = "AGI", all.y= FALSE)
+```
+## weighted distri lower 20
+```{r distri}
+all_combinations <- CJ(
+  rep = unique(C50_S_2$rep),
+  Sorensen_2 = unique(C50_S_2$Sorensen_2),
+  polya_size = unique(C50_S_2$polya_size))
+
+weighted_data <-C50_S_2[, .(weighted_n = sum(weight)), by = .(polya_size, rep,Sorensen_2)]
+weighted_data <- merge(all_combinations, weighted_data, by = c("rep", "polya_size", "Sorensen_2"), all.x = TRUE)
+weighted_data <- weighted_data[is.na(weighted_n), weighted_n := 0]
+weighted_data[, `:=` (total_weighted = sum(weighted_n), perc = 100 * (weighted_n) / sum(weighted_n)), by = .(rep,Sorensen_2)]
+weighted_data[, mean:=mean(perc, na.rm = T), by = .(polya_size,Sorensen_2)]
+
+# Function to calculate smoothed values
+precalc_smooth <- function(data, x_col, y_col, group_cols, span = 0.03) {
+  smoothed_data <- data[, {
+    fit <- loess(get(y_col) ~ get(x_col), 
+                 data= .SD, 
+                 span = span, 
+                 control = loess.control(surface = "direct"))  # Add this!
+    smooth <- predict(fit)
+    .(x = get(x_col), y = smooth)
+  }, by = group_cols]
+  return(smoothed_data)
+}
+
+grouping_vars <- "Sorensen_2" 
+
+weighted_data_smooth <- precalc_smooth(weighted_data, "polya_size", "mean", grouping_vars)
+```
+```{r weighted distri 2nd HL split}
+weighted <- ggplot() +
+ 
+  geom_area(data= weighted_data_smooth, aes(x = x, y = y, color = Sorensen_2, fill =Sorensen_2), alpha = 0.2, position = "identity") +  
+  #geom_text(data= Count, aes(label = N), x = 160, y = 0.9, size = 6)+
+  #geom_vline(xintercept= c(20, 43), linetype = "dashed", color = "red")+
+  
+ scale_fill_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+  scale_color_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+  scale_x_continuous(expand = c(0,0),
+    limits = c(9, 200),
+    breaks = custom_breaks,
+    labels = every_nth(custom_breaks, 6, inverse = TRUE)
+  ) +
+  scale_y_continuous(limits = c(0, 1.5), breaks = scales::pretty_breaks(n = 3))+
+  guides(fill = guide_legend(override.aes = list(size = 3, alpha = 0.4))) +
+ 
+ 
+  theme(legend.position = "none")+
+  
+  labs(
+    #title = "weighted distri",
+    #subtitle = "Sorensen",
+    x = "polyA tail size",
+    y = "frequency"
+  )
+
+weighted
+ggsave(filename = "pdf_R10_seedlings_WT_weighted_split_Sorensen_2.pdf", weighted, width =8, height = 6, dpi = 1200)
+```
+```{r clean}
+rm(weighted_data, weighted_data_smooth, all_combinations)
+rm(list = ls()[sapply(ls(), function(x) inherits(get(x), "gg"))])
+```
+
+
+## box - und barplots
+```{r box short}
+box <- ggplot(Table_AGI_S_2, aes(x = rep, y = perc_short, color =Sorensen_2)) +
+  geom_boxplot(position = position_dodge(0.9), outlier.shape = NA,  fill = "white",  width=0.5, linewidth = 1, alpha=0.4, notch=F)+
+  facet_wrap(~Sorensen_2, nrow = 1)+
+  scale_y_continuous(limits = c(0, 35))+
+  scale_fill_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+  scale_color_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+   theme_no_grid()+
+   theme(axis.title.x = element_blank())+
+   theme (legend.position="none")+
+  
+labs(
+     #x="",
+     y= "% short reads")
+box
+ggsave(filename ="pdf_R10_seedlings_WT_box_short_Sorensen_2.pdf", box, width = 6, height = 6, dpi = 1200)
+
+```
+```{r box medium}
+box <- ggplot(Table_AGI_S_2, aes(x = rep, y = perc_medium, color =Sorensen_2)) +
+  geom_boxplot(position = position_dodge(0.9), outlier.shape = NA,  fill = "white",  width=0.5, linewidth = 1, alpha=0.4, notch=F)+
+  facet_wrap(~Sorensen_2, nrow = 1)+
+  scale_y_continuous(limits = c(0, 35))+
+  scale_fill_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+  scale_color_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+   theme_no_grid()+
+   theme(axis.title.x = element_blank())+
+   theme (legend.position="none")+
+  
+labs(
+     #x="",
+     y= "% medium reads")
+box
+ggsave(filename ="pdf_R10_seedlings_WT_box_medium_Sorensen_2.pdf", box, width = 6, height = 6, dpi = 1200)
+
+```
+
+
+# TE Hsu
+
+```{r fread TE Hsu}
+TE_Hsu_all <- fread("/Users/hlange/Desktop/bioinfo/published_data/translation efficiency/TE_Hsu.csv")
+
+plot <- ggplot(TE_Hsu_all, aes(mean_TE))+
+  geom_density()+
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red")+
+  
+  scale_x_continuous(limits = c(0,3))+
+  #scale_y_continuous(limits = c(0,3))+
+  theme_classic(base_size = 15)+
+  theme (legend.position="none")+
+
+  labs(title = "TE_Hsu_all.pdf")
+
+  
+plot
+#ggsave(filename ="pdf_R10_seedlings_WT_TE_all_Hsu.pdf", plot, width = 4, height = 2, dpi = 1200)
+```
+```{r match AGI}
+TE_Hsu <- unique(TE_Hsu_all[AGI %in% Table_AGI$AGI], by = "AGI")
+n_cuts <- 5  # You can change this to any integer ≥ 1
+
+TE_Hsu[, Hsu := cut(mean_TE,breaks = quantile(mean_TE, probs = seq(0, 1, length.out = n_cuts + 1), na.rm = TRUE),  include.lowest = TRUE, labels = FALSE)]
+
+quantile_limits <- quantile(
+  TE_Hsu$mean_TE,
+  probs = seq(0, 1, length.out = n_cuts + 1),
+  na.rm = TRUE
+)
+quantile_limits
+TE_Hsu [, Hsu := as.character(Hsu)]
+TE_Hsu <- merge(TE_Hsu, mRNA_size, by = "AGI")
+```
+quantile_limits
+         0%         20%         40%         60%         80%        100% 
+ 0.03693286  0.75122811  1.00662393  1.23730513  1.51920247 12.14984709 
+```{r get info}
+info_Hsu <- TE_Hsu[, .(AGI, mean_TE, Hsu)]
+info_Hsu[, Hsu := as.character(Hsu)]
+```
+```{r merge info_TE to C50 and Table_AGI}
+C50_H <- merge(C50, info_Hsu[,.(AGI, Hsu)], by = "AGI")
+Table_AGI_H <- merge(Table_AGI, info_Hsu, by = "AGI")
+mean_Table_AGI_H <- merge(mean_Table_AGI, info_Hsu, by = "AGI")
+```
+
+## weighted distri by TE quantiles
+```{r distri}
+all_combinations <- CJ(
+  rep = unique(C50_H$rep),
+  Hsu = unique(C50_H$Hsu),
+  polya_size = unique(C50_H$polya_size))
+
+weighted_data <-C50_H[, .(weighted_n = sum(weight)), by = .(polya_size, rep, Hsu)]
+weighted_data <- merge(all_combinations, weighted_data, by = c("rep", "polya_size", "Hsu"), all.x = TRUE)
+weighted_data <- weighted_data[is.na(weighted_n), weighted_n := 0]
+weighted_data[, `:=` (total_weighted = sum(weighted_n), perc = 100 * (weighted_n) / sum(weighted_n)), by = .(rep, Hsu)]
+weighted_data[, mean:=mean(perc, na.rm = T), by = .(polya_size, Hsu)]
+
+# Function to calculate smoothed values
+precalc_smooth <- function(data, x_col, y_col, group_cols, span = 0.025) {
+  smoothed_data <- data[, {
+    fit <- loess(get(y_col) ~ get(x_col), 
+                 data= .SD, 
+                 span = span, 
+                 control = loess.control(surface = "direct"))  # Add this!
+    smooth <- predict(fit)
+    .(x = get(x_col), y = smooth)
+  }, by = group_cols]
+  return(smoothed_data)
+}
+
+grouping_vars <- "Hsu" 
+
+weighted_data_smooth <- precalc_smooth(weighted_data, "polya_size", "mean", grouping_vars)
+```
+```{r weighted distri overlay}
+weighted <- ggplot() +
+ 
+  geom_area(data= weighted_data_smooth, aes(x = x, y = y, color = Hsu, fill = Hsu), alpha = 0.2, position = "identity") +  
+  #geom_text(data= Count, aes(label = N), x = 160, y = 0.9, size = 6)+
+  #geom_vline(xintercept= c(20, 43), linetype = "dashed", color = "red")+
+  
+ scale_fill_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+  scale_color_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+  scale_x_continuous(expand = c(0,0),
+    limits = c(9, 200),
+    breaks = custom_breaks,
+    labels = every_nth(custom_breaks, 6, inverse = TRUE)
+  ) +
+  scale_y_continuous(limits = c(0, NA), breaks = scales::pretty_breaks(n = 3))+
+  guides(fill = guide_legend(override.aes = list(size = 3, alpha = 0.4))) +
+ 
+ 
+  theme(legend.position = "none")+
+  
+  labs(
+    #title = "weighted distri",
+    #subtitle = "Hsu",
+    x = "polyA tail size",
+    y = "frequency"
+  )
+
+weighted
+ggsave(filename = "pdf_R10_seedlings_WT_weighted_split_Hsu.pdf", weighted, width =8, height = 5, dpi = 1200)
+```
+```{r clean}
+rm(weighted_data, weighted_data_smooth, all_combinations)
+rm(list = ls()[sapply(ls(), function(x) inherits(get(x), "gg"))])
+```
+## box - und barplots
+```{r box short}
+box <- ggplot(Table_AGI_H, aes(x = rep, y = perc_short, color =Hsu)) +
+  geom_boxplot(position = position_dodge(0.9), outlier.shape = NA,  fill = "white",  width=0.5, linewidth = 1, alpha=0.4, notch=F)+
+  facet_wrap(~Hsu, nrow = 1)+
+  scale_y_continuous(limits = c(0, 35))+
+  scale_fill_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+  scale_color_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+   theme_no_grid()+
+   theme(axis.title.x = element_blank())+
+   theme (legend.position="none")+
+  
+labs(
+     #x="",
+     y= "% short reads")
+box
+ggsave(filename ="pdf_R10_Heedlings_WT_box_Hhort_Hsu.pdf", box, width = 6, height = 6, dpi = 1200)
+
+```
+```{r box medium}
+box <- ggplot(Table_AGI_H, aes(x = rep, y = perc_medium, color =Hsu)) +
+  geom_boxplot(position = position_dodge(0.9), outlier.shape = NA,  fill = "white",  width=0.5, linewidth = 1, alpha=0.4, notch=F)+
+  facet_wrap(~Hsu, nrow = 1)+
+  scale_y_continuous(limits = c(0, 35))+
+  scale_fill_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+  scale_color_viridis_d(option = "E", direction = 1, begin = 0.15, end = 0.8)+
+   theme_no_grid()+
+   theme(axis.title.x = element_blank())+
+   theme (legend.position="none")+
+  
+labs(
+     #x="",
+     y= "% medium reads")
+box
+ggsave(filename ="pdf_R10_Heedlings_WT_box_medium_Hsu.pdf", box, width = 6, height = 6, dpi = 1200)
+
+```
+
+
+# dotplots black
+
+```{r dotplot RPM vs median polyA size}
+cor_test <- cor.test(mean_Table_AGI$mean_median, mean_Table_AGI$mean_RPM, method = "spearman")
+
+corr_label <- paste0(
+  "r = ", round(cor_test$estimate, 3),
+  "\np = ", formatC(cor_test$p.value, format = "e", digits = 2)
+)
+
+dotplot<- ggplot()+
+  geom_point(data = mean_Table_AGI, aes(x = mean_median, y = mean_RPM) , color = "black", size = 2, alpha = 0.2)+
+  geom_smooth(data = mean_Table_AGI,aes(x = mean_median, y = mean_RPM),method = "lm", se = FALSE, color = "red", linewidth = 0.8 ) +
+  annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.5,  label = corr_label,  size = 10) +
+  scale_y_log10()+
+  scale_x_continuous(limits = c(25, 200))+
+  
+  theme_no_grid()+
+  theme(axis.text.x = element_text())+
+ 
+  labs(
+    x = "median polyA size",
+    y = "RPM"
+  )
+dotplot
+ggsave(filename ="pdf_R10_seedlings_WT_dotplot_RPM.pdf", dotplot, width = 8, height = 5, dpi = 1200)
+```
+```{r dotplot HL vs median polyA size}
+cor_test <- cor.test(mean_Table_AGI_S$mean_median, mean_Table_AGI_S$mean_HL, method = "spearman")
+
+corr_label <- paste0(
+  "r = ", round(cor_test$estimate, 3),
+  "\np = ", formatC(cor_test$p.value, format = "e", digits = 2)
+)
+
+dotplot<- ggplot()+
+  geom_point(data = mean_Table_AGI_S, aes(x = mean_median, y = mean_HL) , color = "black", size = 2, alpha = 0.2)+
+  geom_smooth(data = mean_Table_AGI_S,aes(x = mean_median, y = mean_HL),method = "lm", se = FALSE, color = "red", linewidth = 0.8 ) +
+  annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.5,  label = corr_label,  size = 10) +
+  
+  scale_x_continuous(limits = c(25, 200))+
+  theme_no_grid()+
+  theme(axis.text.x = element_text())+
+ 
+  labs(
+    x = "median polyA size",
+    y = "mRNA half-life"
+  )
+dotplot
+ggsave(filename ="pdf_R10_seedlings_WT_dotplot_HL.pdf", dotplot, width = 8, height = 5, dpi = 1200)
+```
+```{r dotplot TE vs median polyA size}
+cor_test <- cor.test(mean_Table_AGI_H$mean_median, mean_Table_AGI_H$mean_TE, method = "spearman")
+
+corr_label <- paste0(
+  "r = ", round(cor_test$estimate, 3),
+  "\np = ", formatC(cor_test$p.value, format = "e", digits = 2)
+)
+
+dotplot<- ggplot()+
+  geom_point(data = mean_Table_AGI_H, aes(x = mean_median, y = mean_TE) , color = "black", size = 2, alpha = 0.2)+
+  geom_smooth(data = mean_Table_AGI_H,aes(x = mean_median, y = mean_TE),method = "lm", se = FALSE, color = "red", linewidth = 0.8 ) +
+  annotate("text", x = Inf, y = Inf, hjust = 1.1, vjust = 1.5,  label = corr_label,  size = 10) +
+  scale_y_continuous(limits = c(0, 5))+
+  scale_x_continuous(limits = c(25, 200))+
+  theme_no_grid()+
+  theme(axis.text.x = element_text())+
+ 
+  labs(
+    x = "median polyA size",
+    y = "translation efficiency"
+  )
+dotplot
+ggsave(filename ="pdf_R10_seedlings_WT_dotplot_mean_TE.pdf", dotplot, width = 8, height = 5, dpi = 1200)
+```
+
+# 40 most abundant in seedlings ordered by abundance
+```{r merge info to mean table AGI}
+mean_Table_AGI <- merge(mean_Table_AGI, info_Sorensen, by = "AGI",   all.x = TRUE, all.y = FALSE)
+mean_Table_AGI <- merge(mean_Table_AGI, info_Hsu, by = "AGI",  all.x = TRUE, all.y = FALSE)
+```
+mean_Table_AGI
+```{r}
+ordered_AGIs <- mean_Table_AGI[order(-mean_RPM), AGI]
+top40 <- ordered_AGIs[1:40]
+reads_1 <- C50[AGI %in% top40]
+
+reads_1[, AGI := factor(AGI, levels = ordered_AGIs)]
+```
+```{r}
+table_1 <- Table_AGI[AGI %in% top40]
+mean_table_1 <- mean_Table_AGI[AGI %in% top40]
+
+```
+
+```{r}
+pRep_table <- function(dt, cols, round_col=NULL, digits=1) {
+  out <- dt[AGI %in% top40, ..cols]
+  if (!is.null(round_col)) out[, (round_col) := round(get(round_col), digits)]
+  out
+}
+RPM <- pRep_table(mean_Table_AGI[AGI %in% top40], c("AGI","mean_RPM"), round_col="mean_RPM", digits=0)
+median <- pRep_table(mean_Table_AGI[AGI %in% top40], c("AGI","mean_median"), round_col="mean_median", digits=0)
+peak   <- pRep_table(mean_Table_AGI[AGI %in% top40], c("AGI","peak_p"), round_col="peak_p", digits=0)
+HL     <- pRep_table(mean_Table_AGI[AGI %in% top40], c("AGI","mean_HL"), round_col="mean_HL", digits=0)
+TE     <- pRep_table(mean_Table_AGI[AGI %in% top40], c("AGI","mean_TE"), round_col="mean_TE", digits=1)
+```
+```{r bin polyA}
+reads_1[, polya_r := round_any(polya_size, 3)]
+
+distri <- reads_1[, .(n=.N), by = .(AGI, polya_r, rep)]
+
+all_combinations <- CJ(
+  AGI       = top40,
+  polya_r   = unique(reads_1$polya_r),
+  rep       = unique(reads_1$rep)
+)
+
+distri <- merge(all_combinations, distri, by=c("AGI","polya_r","rep"), all.x=TRUE)
+distri[is.na(n), n := 0]
+
+distri[, tot := sum(n), by = .(AGI, rep)]
+distri[, perc := 100*n/tot]
+
+distri[, mean := mean(perc), by = .(AGI, polya_r)]
+
+mean_distri <- unique(distri, by = c("AGI","polya_r"))
+
+```
+```{r}
+# Apply order to all data tables used in the plots
+for(dt in list(reads_1, distri, mean_distri, table_1, mean_table_1, peak, RPM, median, peak, HL, TE)) {
+  dt[, AGI := factor(AGI, levels = ordered_AGIs)]
+}
+
+```
+
+```{R distri pdf}
+plot_di <- ggplot()+
+  geom_col(data = mean_distri, aes(x=polya_r, y = mean), fill= "#004949", alpha = 0.5)+
+  geom_point(data = distri, aes(x=polya_r, y = perc), color = "#004949", alpha = 0.8, size = 1)+
+geom_text(data = peak,  aes(label = peak_p, x = Inf),  color = "magenta", y = Inf, vjust = 1.5, size = 12) +
+geom_text(  data = RPM,  aes(label = mean_RPM, x = Inf),  hjust = 1, color = "black", y = Inf, vjust = 3, size = 12) +
+geom_text(  data = HL,  aes(label = mean_HL, x = Inf),  hjust = 1, color = "#007A99", y = Inf, vjust = 4.5, size = 12) +
+geom_text(  data = TE,  aes(label = mean_TE, x = Inf), hjust = 1, color = "#860086", y = Inf, vjust = 6, size = 12)+
+
+  geom_vline(data = peak, aes(xintercept = peak_p), color = "magenta", linetype = "dashed", alpha= 1) +
+  facet_wrap(~AGI, ncol =5)+
+  
+  #scale_fill_manual(values = tissue_colors, name = NULL)+
+  #scale_color_manual(values =  tissue_colors, guide = "none")+
+  scale_x_continuous(expand = c(0,0), limits=c(9, 200),
+                     breaks = custom_breaks,
+                     labels = every_nth(custom_breaks, 9, inverse = TRUE)) + 
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 3))+
+  guides(fill = guide_legend(override.aes = list(size = 3, alpha = 1)))+
+  ylab("density") +
+  xlab("polyA tail size")+
+ 
+  theme_no_grid()+
+  theme (legend.position="none")+
+ # theme(strip.text.x = element_blank())+
+ # theme(strip.background = element_blank())+
+  theme(axis.text.x = element_blank())+
+  labs(#title = "R10_Genotype, always short",
+       #subtitle = "binsize = 3",
+  y= "frequency (%)",
+  x= "polyA tail size")
+plot_di
+
+ggsave(filename ="pdf_R10_seedlings_WT_top40_ordered_distri.pdf", plot_di, width = 20, height = 40, dpi = 1200)
+
+```
+
+
+# 10 favourite in seedlings ordered by abundance
+```{r}
+gags_AGIs <- mean_Table_AGI[AGI %in% gag_ten]
+ordered_AGIs <- gags_AGIs[order(-mean_RPM), AGI]
+top10 <- ordered_AGIs[1:10]
+reads_1 <- C50[AGI %in% top10]
+
+reads_1[, AGI := factor(AGI, levels = ordered_AGIs)]
+```
+```{r}
+table_1 <- Table_AGI[AGI %in% top10]
+mean_table_1 <- mean_Table_AGI[AGI %in% top10]
+
+```
+
+```{r}
+pRep_table <- function(dt, cols, round_col=NULL, digits=1) {
+  out <- dt[AGI %in% top10, ..cols]
+  if (!is.null(round_col)) out[, (round_col) := round(get(round_col), digits)]
+  out
+}
+
+RPM_Rep     <- pRep_table(Table_AGI, c("AGI","RPM","rep"))
+median_Rep  <- pRep_table(Table_AGI, c("AGI","median","rep"))
+peak        <- pRep_table(mean_Table_AGI, c("AGI","peak_p"))
+
+```
+```{r bin polyA}
+reads_1[, polya_r := round_any(polya_size, 3)]
+
+distri <- reads_1[, .(n=.N), by = .(AGI, polya_r, rep)]
+
+all_combinations <- CJ(
+  AGI       = top10,
+  polya_r   = unique(reads_1$polya_r),
+  rep       = unique(reads_1$rep)
+)
+
+distri <- merge(all_combinations, distri, by=c("AGI","polya_r","rep"), all.x=TRUE)
+distri[is.na(n), n := 0]
+
+distri[, tot := sum(n), by = .(AGI, rep)]
+distri[, perc := 100*n/tot]
+
+distri[, mean := mean(perc), by = .(AGI, polya_r)]
+
+mean_distri <- unique(distri, by = c("AGI","polya_r"))
+
+```
+```{r}
+# Apply order to all data tables used in the plots
+for(dt in list(reads_1, distri, mean_distri, table_1, mean_table_1, peak, RPM_Rep, median_Rep)) {
+  dt[, AGI := factor(AGI, levels = ordered_AGIs)]
+}
+
+```
+
+```{R distri pdf}
+plot_di <- ggplot()+
+  geom_col(data = mean_distri, aes(x=polya_r, y = mean), fill= "#004949", alpha = 0.5)+
+ geom_point(data = distri, aes(x=polya_r, y = perc), color = "#004949", alpha = 0.8, size = 1)+
+  geom_text(data = peak, aes(label = peak_p,  x = peak_p + 20), color = "#004949", y = Inf, vjust= 1.5, size = 12)+
+ 
+ geom_vline(data = peak, aes(xintercept = peak_p), color = "magenta", linetype = "dashed", alpha= 1) +
+  facet_wrap(~AGI, ncol =5)+
+  
+  #scale_fill_manual(values = tissue_colors, name = NULL)+
+  #scale_color_manual(values =  tissue_colors, guide = "none")+
+  scale_x_continuous(expand = c(0,0), limits=c(9, 200),
+                     breaks = custom_breaks,
+                     labels = every_nth(custom_breaks, 9, inverse = TRUE)) + 
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 3))+
+  guides(fill = guide_legend(override.aes = list(size = 3, alpha = 1)))+
+  ylab("density") +
+  xlab("polyA tail size")+
+ 
+  
+  theme (legend.position="none")+
+ # theme(strip.text.x = element_blank())+
+ # theme(strip.background = element_blank())+
+  theme(axis.text.x = element_blank())+
+  labs(#title = "R10_Genotype, always short",
+       #subtitle = "binsize = 3",
+  y= "frequency (%)",
+  x= "polyA tail size")
+plot_di
+
+ggsave(filename ="pdf_R10_seedlings_WT_top10_ordered_distri.pdf", plot_di, width = 20, height = 10, dpi = 1200)
+
+```
+
+# dotplots highlight
+```{r dotplot RPM vs median polyA size}
+dotplot<- ggplot()+
+  geom_point(data = mean_Table_AGI, aes(x = mean_median, y = mean_RPM) , color = "black", size = 2, alpha = 0.2)+
+  geom_point(data = mean_Table_AGI[AGI %in% top40], aes(x = mean_median, y = mean_RPM) , color = "red", size = 2, alpha = 0.8)+
+  scale_y_log10()+
+  scale_x_continuous(limits = c(25, 200))+
+  theme_no_grid()+
+  theme(axis.text.x = element_text())+
+ 
+  labs(
+    x = "median polyA size",
+    y = "RPM"
+  )
+dotplot
+ggsave(filename ="pdf_R10_seedlings_WT_dotplot_RPM_top40.pdf", dotplot, width = 8, height = 5, dpi = 1200)
+```
+```{r dotplot HL vs median polyA size}
+
+
+dotplot<- ggplot()+
+  geom_point(data = mean_Table_AGI_S, aes(x = mean_median, y = mean_HL) , color = "black", size = 2, alpha = 0.2)+
+  geom_point(data = mean_Table_AGI_S[AGI %in% top40], aes(x = mean_median, y = mean_HL) , color = "red", size = 2, alpha = 0.8)+
+  
+  
+  scale_x_continuous(limits = c(25, 200))+
+  theme_no_grid()+
+  theme(axis.text.x = element_text())+
+ 
+  labs(
+    x = "median polyA size",
+    y = "mRNA half-life"
+  )
+dotplot
+ggsave(filename ="pdf_R10_seedlings_WT_dotplot_HL_highlight.pdf", dotplot, width = 8, height = 5, dpi = 1200)
+```
+```{r dotplot TE vs median polyA size}
+
+dotplot<- ggplot()+
+  geom_point(data = mean_Table_AGI_H, aes(x = mean_median, y = mean_TE) , color = "black", size = 2, alpha = 0.2)+
+  geom_point(data = mean_Table_AGI_H[AGI %in% top40], aes(x = mean_median, y = mean_TE) , color = "red", size = 2, alpha = 0.8)+
+  scale_y_continuous(limits = c(0, 5))+
+  scale_x_continuous(limits = c(25, 200))+
+  theme_no_grid()+
+  theme(axis.text.x = element_text())+
+ 
+  labs(
+    x = "median polyA size",
+    y = "translation efficiency"
+  )
+dotplot
+ggsave(filename ="pdf_R10_seedlings_WT_dotplot_mean_TE_highlight.pdf", dotplot, width = 8, height = 5, dpi = 1200)
+```
+
+

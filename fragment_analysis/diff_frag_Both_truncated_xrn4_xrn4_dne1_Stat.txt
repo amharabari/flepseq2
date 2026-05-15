@@ -1,0 +1,1 @@
+gene_id	feature_id	p_gene	p_transcript	Degradation_Tag	mean_prop_level1	mean_prop_level2	delta_prop	Change	diff
