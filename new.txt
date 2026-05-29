@@ -1,0 +1,25 @@
+Degradation_Tag	comparaison	Condition	diff	Change	number	total	Percent
+3'_truncated	xrn4 - Col0	Seedling	sign	decrease	63	10078	0.62512403254614
+3'_truncated	xrn4 - Col0	Seedling	sign	increase	32	10078	0.317523318118674
+3'_truncated	xrn4_dne1 - Col0	Seedling	sign	decrease	86	10078	0.853343917443937
+3'_truncated	xrn4_dne1 - Col0	Seedling	sign	increase	21	10078	0.20837467751538
+3'_truncated	xrn4_dne1 - xrn4	Seedling	sign	decrease	29	10078	0.287755507045049
+3'_truncated	xrn4_dne1 - xrn4	Seedling	sign	increase	16	10078	0.158761659059337
+5'_truncated	xrn4 - Col0	Seedling	sign	decrease	24	14549	0.164959791050931
+5'_truncated	xrn4 - Col0	Seedling	sign	increase	19	14549	0.130593167915321
+5'_truncated	xrn4_dne1 - Col0	Seedling	sign	decrease	23	14549	0.158086466423809
+5'_truncated	xrn4_dne1 - Col0	Seedling	sign	increase	26	14549	0.178706440305176
+5'_truncated	xrn4_dne1 - xrn4	Seedling	sign	decrease	7	14549	0.048113272389855
+5'_truncated	xrn4_dne1 - xrn4	Seedling	sign	increase	10	14549	0.0687332462712214
+Both_truncated	xrn4 - Col0	Seedling	sign	decrease	33	3911	0.843773970851445
+Both_truncated	xrn4 - Col0	Seedling	sign	increase	6	3911	0.153413449245717
+Both_truncated	xrn4_dne1 - Col0	Seedling	sign	decrease	40	3911	1.02275632830478
+Both_truncated	xrn4_dne1 - Col0	Seedling	sign	increase	2	3911	0.0511378164152391
+Both_truncated	xrn4_dne1 - xrn4	Seedling	sign	decrease	7	3911	0.178982357453337
+Both_truncated	xrn4_dne1 - xrn4	Seedling	sign	increase	3	3911	0.0767067246228586
+Intact	xrn4 - Col0	Seedling	sign	decrease	4	12957	0.0308713436752335
+Intact	xrn4 - Col0	Seedling	sign	increase	38	12957	0.293277764914718
+Intact	xrn4_dne1 - Col0	Seedling	sign	decrease	8	12957	0.0617426873504669
+Intact	xrn4_dne1 - Col0	Seedling	sign	increase	45	12957	0.347302616346376
+Intact	xrn4_dne1 - xrn4	Seedling	sign	decrease	7	12957	0.0540248514316586
+Intact	xrn4_dne1 - xrn4	Seedling	sign	increase	6	12957	0.0463070155128502

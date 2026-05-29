@@ -1,5 +1,9 @@
-Degradation_Tag	N
-Intact	38
-5'_truncated	19
-3'_truncated	93
-Both_truncated	20
+Degradation_Tag	Change	N
+Intact	increase	87
+Intact	decrease	15
+5'_truncated	decrease	49
+5'_truncated	increase	29
+3'_truncated	decrease	172
+3'_truncated	increase	88
+Both_truncated	decrease	126
+Both_truncated	increase	16

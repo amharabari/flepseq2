@@ -24,18 +24,22 @@ cols_to_keep <- unique(c(
   "Read.name", "Read.start", "Read.end",
   "Feature.name", "Feature.start", "Feature.end", "Feature.strand",
   "CDS.start_codon", "CDS.stop_codon", "CDS_dist_5prime", "CDS_dist_3prime", 
-  "Degradation_Tag", "PolyA", "Add_tail", "PolyA_length_basecall", 
+  "Degradation_Tag", "RA5_tag", "PolyA", "Add_tail", "PolyA_length_basecall", 
   "PolyA_length_signal", "Add_tail_length", "Dist_from_5prime", 
   "Dist_from_3prime", "Tail_tag"
 ))
 
-# ------------------------------------------------------------------------------
+# ==============================================================================
 # IMPORTING BAMPARSED:
 # PHASE 1: CONVERSION 
-# ------------------------------------------------------------------------------
+# ==============================================================================
 
 file_paths <- list.files(path = raw_path, pattern = "\\.gz$", full.names = TRUE)
 start_total <- Sys.time()
+
+# Read just the header of one raw file
+header <- fread(file_paths[1], sep = "\t", nrows = 0)
+colnames(header)
 
 cat("\n--- PHASE 1: Converting TSV.GZ to Parquet (Memory-Safe) ---\n")
 
@@ -70,9 +74,40 @@ for (i in seq_along(file_paths)) {
   }
 }
 
-# ------------------------------------------------------------------------------
+# ==============================================================================
+# PHASE 1b: PATCH — add RA5_tag to existing Parquet files
+# ==============================================================================
+cat("\n--- PHASE 1b: Patching RA5_tag into Parquet files ---\n")
+
+for (i in seq_along(file_paths)) {
+  f        <- file_paths[i]
+  bc_name  <- regmatches(f, regexpr("barcode\\d+", f))
+  out_path <- file.path(parquet_dir, paste0(bc_name, ".parquet"))
+  
+  existing_schema <- schema(open_dataset(out_path))
+  
+  if ("RA5_tag" %in% names(existing_schema)) {
+    cat(sprintf("[%d/%d] Skipping %s (RA5_tag already present)\n",
+                i, length(file_paths), bc_name))
+    next
+  }
+  
+  patch    <- fread(f, sep = "\t", select = c("Read.name", "RA5_tag"), showProgress = FALSE)
+  patch    <- unique(patch, by = "Read.name")
+  existing <- read_parquet(out_path)
+  updated  <- merge(existing, patch, by = "Read.name", all.x = TRUE)
+  write_parquet(updated, out_path, compression = "snappy")
+  
+  rm(patch, existing, updated); gc(verbose = FALSE)
+  cat(sprintf("[%d/%d] Patched %s\n", i, length(file_paths), bc_name))
+}
+
+ds <- open_dataset(parquet_dir)
+cat("Columns:", paste(names(schema(ds)), collapse = ", "), "\n")
+
+# ==============================================================================
 # PHASE 2: STACKING DATASETS + SAMPLE TABLE MAPPING
-# ------------------------------------------------------------------------------
+# ==============================================================================
 
 cat("\n--- PHASE 2: Stacking and Mapping Datasets to Sample table---\n")
 
@@ -88,6 +123,7 @@ metadata_path <- "flepseq2/bamparsed/barcode_correspondance.tsv"
 actual_tags   <- c("Intact", "5'_truncated", "3'_truncated", "Both_truncated")
 
 ds <- open_dataset(parquet_dir)
+colnames(ds)
 SampleTable <- fread(metadata_path)
 
 library_sizes <- ds %>%
@@ -98,7 +134,7 @@ library_sizes <- ds %>%
 SampleTable <- merge(SampleTable, library_sizes, by = "Barcode", all.x = TRUE)
 
 # ==============================================================================
-# 2. HELPER FUNCTIONS (defined once)
+# 2. HELPER FUNCTIONS 
 # ==============================================================================
 
 my_prepare <- function(x, level1, level2) {
@@ -275,12 +311,12 @@ run_comparison <- function(level1, level2, SampleTable, ds,
   cat("\nSignificant genes per tag:\n")
   print(all_sig[, .N, by = Degradation_Tag]) #!!
   
-  write.table(all_sig,
-              paste0("flepseq2/fragment_analysis/diff_frag_", comp_name, ".txt"),
-              sep = "\t", row.names = FALSE, quote = FALSE)
+ # write.table(all_sig,
+ #             paste0("flepseq2/fragment_analysis/diff_frag_", comp_name, ".txt"),
+ #             sep = "\t", row.names = FALSE, quote = FALSE)
   
-  write.table(all_sig[, .N, by = Degradation_Tag], paste0("flepseq2/fragment_analysis/diff_frag_Nb_", comp_name, ".txt"),
-              sep = "\t", row.names = FALSE, quote = FALSE)
+#  write.table(all_sig[, .N, by = Degradation_Tag], paste0("flepseq2/fragment_analysis/diff_frag_Nb_", comp_name, ".txt"),
+#              sep = "\t", row.names = FALSE, quote = FALSE)
   
 
 # ==============================================================================

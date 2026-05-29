@@ -1,5 +1,4 @@
-# GLOBAL DIFFERENTIAL ANALYSIS OF FRAGMENTS IN Col0-xnr4
-
+# GLOBAL DIFFERENTIAL ANALYSIS OF FRAGMENTS IN Col0-xrn4
 setwd("~/AMHLABO/")
 
 library(data.table)
@@ -46,7 +45,7 @@ SampleTable <- merge(SampleTable, library_sizes, by = "Barcode", all.x = TRUE)
 # ==============================================================================
 
 target_barcodes <- SampleTable[
-  Genotype %in% c("xrn4", "xrn4_dne1") & Condition == "Seedling", Barcode]
+  Genotype %in% c("Col0", "xrn4") & Condition == "Seedling", Barcode]
 
 #target_barcodes <- SampleTable[
 #  Genotype %in% c("Col0", "xrn4") & Condition == "Seedling", Barcode] #%
@@ -57,21 +56,20 @@ global_tag_raw <- ds %>%
   collect() %>%
   as.data.table()
 
-# --- 3. Row filters (while Feature.name still exists) ---
+# --- 3. Row filters ---
 global_tag_raw <- global_tag_raw[Barcode %chin% target_barcodes]
 global_tag_raw <- global_tag_raw[!grepl("^ATCG|^ATMG", Feature.name)]
 global_tag_raw <- global_tag_raw[Degradation_Tag != "No_CDS"]
 global_tag_raw <- global_tag_raw[Degradation_Tag %in% actual_tags]
 
-# --- 4. Merge metadata (needed by the gene filter below) ---
+# --- 4. Merge metadata  ---
 global_tag_raw <- merge(
   global_tag_raw,
   SampleTable[, .(Barcode, Sample_name, Genotype, Rep, Condition)],
   by = "Barcode", all.x = TRUE
 )
 
-# --- 5. Flexible gene filter (≥150 reads in all 3 reps per genotype) ---
-# Each row is still one read here, so use .N
+# --- 5. Gene filter (≥150 reads in all 3 reps per genotype) ---
 gene_totals <- global_tag_raw[, .(Total = .N),
                               by = .(Feature.name, Sample_name, Genotype, Rep)]
 
@@ -85,10 +83,8 @@ list_targets <- list_targets[, .(both_pass = all(passed)),
 cat("Genes passing flexible filter:", length(list_targets), "\n")
 global_tag_raw <- global_tag_raw[Feature.name %in% list_targets]
 
-# --- 6. Drop Feature.name — no longer needed ---
-global_tag_raw[, Feature.name := NULL]
 
-# --- 7. Aggregate: lib totals and per-tag counts (each row = 1 read → .N is correct) ---
+# --- 7. Aggregate: lib totals and per-tag counts ---
 lib_totals <- global_tag_raw[, .(lib_total = .N), by = Barcode]
 tag_counts <- global_tag_raw[, .(raw_count = .N), by = .(Barcode, Sample_name, Degradation_Tag)]
 tag_counts <- merge(tag_counts, lib_totals, by = "Barcode")
@@ -104,7 +100,7 @@ tag_counts <- merge(
 tag_counts[, NonTag_reads     := lib_total - raw_count]
 tag_counts[, raw_count_adj    := raw_count    + 0.5]
 tag_counts[, NonTag_reads_adj := NonTag_reads + 0.5]
-tag_counts[, variable         := factor(Genotype, levels = c("xrn4", "xrn4_dne1"))] #% 
+tag_counts[, variable         := factor(Genotype, levels = c("Col0", "xrn4"))] #% 
 
 # --- 10. GLM per tag ---
 results <- lapply(actual_tags, function(tag) {
@@ -135,6 +131,12 @@ result_table[, padj := p.adjust(p.value, "BH")]
 # --- 11. Mean proportions per genotype per tag ---
 tag_counts[, cpm := (raw_count / lib_total) * 1e6]
 
+cpm_wide <- dcast(
+  tag_counts,
+  Degradation_Tag ~ Genotype + Sample_name,
+  value.var = "cpm"
+)
+
 mean_cpm_summary <- tag_counts[, .(
   mean_cpm = mean(cpm, na.rm = TRUE),
   sd_cpm   = sd(cpm,   na.rm = TRUE)
@@ -142,23 +144,27 @@ mean_cpm_summary <- tag_counts[, .(
 
 mean_cpm_wide <- dcast(mean_cpm_summary, Degradation_Tag ~ Genotype, value.var = "mean_cpm")
 setnames(mean_cpm_wide,
-         old = c("xrn4", "xrn4_dne1"), #%
-         new = c("mean_cpm_xrn4", "mean_cpm_xrn4_dne1")) #%
-mean_cpm_wide[, fold_change := mean_cpm_xrn4_dne1 / mean_cpm_xrn4] #%
+         old = c("Col0", "xrn4"), #%
+         new = c("mean_cpm_Col0", "mean_cpm_xrn4")) #%
+mean_cpm_wide[, fold_change := mean_cpm_xrn4 / mean_cpm_Col0] #%
+
 
 result_table <- merge(result_table, mean_cpm_wide, by = "Degradation_Tag", all.x = TRUE)
+result_table <- merge(result_table, cpm_wide, by = "Degradation_Tag", all.x = TRUE)
+
 result_table[, sig := ifelse(padj <= 0.05, "significant", "non_significant")]
 
 cat("\n--- GLM Results ---\n")
 print(result_table[, .(Degradation_Tag, Estimate, Std.Error, z.value, p.value, padj, sig,
-                       mean_cpm_xrn4, mean_cpm_xrn4_dne1, fold_change)]) #%
+                       mean_cpm_Col0, mean_cpm_xrn4, fold_change)]) #%
 
 # --- 12. Boxplot (CPM, significant tags annotated) ---
 
 # Per-replicate CPM for boxplot (one value per Barcode × tag)
 box_df <- copy(tag_counts)
 box_df[, Degradation_Tag := factor(Degradation_Tag, levels = actual_tags)]
-box_df[, Genotype        := factor(Genotype,        levels = c("xrn4", "xrn4_dne1"))] #%
+box_df[, Genotype        := factor(Genotype,        levels = c("Col0", "xrn4"))] #
+box_df[, Rep             := factor(Rep)]
 
 # Bracket y position for significance stars
 bracket_y <- box_df[, .(bracket_y = max(cpm, na.rm = TRUE) * 1.08),
@@ -166,9 +172,7 @@ bracket_y <- box_df[, .(bracket_y = max(cpm, na.rm = TRUE) * 1.08),
 
 sig_labels <- result_table[, .(Degradation_Tag, sig, padj)]
 bracket_y  <- merge(bracket_y, sig_labels, by = "Degradation_Tag", all.x = TRUE)
-
-p <- ggplot(box_df, aes(x = Degradation_Tag, y = cpm,
-                        fill = Genotype)) +
+p <- ggplot(box_df, aes(x = Degradation_Tag, y = cpm, fill = Genotype)) +
   geom_boxplot(position = position_dodge(0.8), width = 0.65,
                outlier.shape = 19, outlier.size = 1.5, alpha = 0.85) +
   # Significance star above significant tags only
@@ -181,7 +185,7 @@ p <- ggplot(box_df, aes(x = Degradation_Tag, y = cpm,
                  labels = scales::comma,
                  limits = c(10000, 1000000)) +
   labs(
-    title    = paste("Global Tag CPM:", "xrn4", "vs", "xrn4_dne1"), #%
+    title    = paste("Global Tag CPM:", "Col0", "vs", "xrn4"), #%
     subtitle = "log10 CPM per replicate | * padj ≤ 0.05",
     x        = "Degradation Tag",
     y        = "CPM (log10 scale)",
@@ -195,28 +199,36 @@ print(p)
 #ggsave("flepseq2/fragment_analysis/global_frag_analysis_Col0_xrn4.pdf", p, width = 5, height = 5)
 
 
-#p <- ggplot(box_df, aes(x = Degradation_Tag, y = cpm,
-#                        fill = Genotype)) +
-#  geom_violin(position = position_dodge(0.8), width = 0.65,
-#              quantile.linetype = F, alpha = 0.85) +
-#  
-#  # Significance star above significant tags only
-#  geom_text(
-#    data = bracket_y[sig == "significant"],
-#    aes(x = Degradation_Tag, y = bracket_y, label = "*"),
-#    inherit.aes = FALSE, size = 7, fontface = "bold"
-#  ) +
-#  scale_y_log10( breaks = c(10000, 20000, 50000, 100000, 200000, 500000, 1000000),
-#                 labels = scales::comma,
-#                 limits = c(10000, 1000000)) +
-#  labs(
-#    title    = paste("Global Tag CPM:", "Col0", "vs", "xrn4"), #%
-#    subtitle = "log10 CPM per replicate | * padj ≤ 0.05",
-#    x        = "Degradation Tag",
-#    y        = "CPM (log10 scale)",
-#    fill     = "Genotype"
-#  ) +
-#  
-#  theme_bw(base_size = 13) +
-#  theme(axis.text.x = element_text(angle = 30, hjust = 1))
-#print(p)
+points <- ggplot(box_df, aes(x = Degradation_Tag, y = cpm, color = Genotype, group = Genotype)) +
+  geom_point(aes(shape = Rep),
+    position = position_dodge(width = 0.5),
+
+    size     = 4,
+    alpha    = 0.9
+  ) +
+  scale_shape_manual(values = c(15, 16, 17), name = "Replicate") +
+  # Significance star above significant tags only
+  geom_text(
+    data = bracket_y[sig == "significant"],
+    aes(x = Degradation_Tag, y = bracket_y, label = "*"),
+    inherit.aes = FALSE, size = 7, fontface = "bold"
+  ) +
+  scale_y_log10( breaks = c(10000, 20000, 50000, 100000, 200000, 500000, 1000000),
+                 labels = scales::comma,
+                 limits = c(10000, 1000000)) +
+  labs(
+    title    = paste("Global Tag CPM:", "Col0", "vs", "xrn4"), #%
+    subtitle = "log10 CPM per replicate | * padj ≤ 0.05",
+    x        = "Degradation Tag",
+    y        = "CPM (log10 scale)",
+    color    = "Genotype",
+    shape    = "Replicate"
+  ) +
+  
+  theme_bw(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+print(points)
+
+
+#ggsave("flepseq2/fragment_analysis/global_frag_analysis_Col0_xrn4_points.pdf", points, width = 5, height = 5)
+
