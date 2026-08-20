@@ -1,0 +1,841 @@
+---
+title: "long_diff_full_pipe"
+author: "Ana-Maria Harabari"
+date: "2026-07-07"
+output: html_document
+---
+
+``` {r setup}
+# r setup
+library(rprojroot)
+setwd(rprojroot::find_rstudio_root_file())
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+
+library(data.table)
+library(stringr)
+library(arrow)   # For Out-of-Memory processing
+library(dplyr)   # For Arrow "remote control"
+library(tidyr)
+library(ggplot2)
+library(scales)
+library(multcomp)
+library(grid) 
+library(patchwork)
+library(forcats)
+genotype_colors <- c("Col0"      = "#888888",
+                     "xrn4"      = "#E6A817",
+                     "xrn4_dne1" = "#5B9BD5")
+
+#ticks and breaks for polyA profiles
+custom_breaks <- c(0,10,20,30,40,50,60,70,80,90,100,110,120,130,140,150,160,170,180,190,200)
+every_nth <- function(x, nth, empty = TRUE, inverse = FALSE) 
+{
+  if (!inverse) {
+    if(empty) {
+      x[1:nth == 1] <- ""
+      x
+    } else {
+      x[1:nth != 1]
+    }
+  } else {
+    if(empty) {
+      x[1:nth != 1] <- ""
+      x
+    } else {
+      x[1:nth == 1]
+    }
+  }
+}
+
+dir.create("r_plots/objects", showWarnings = FALSE, recursive = TRUE)
+
+``` 
+
+``` {r import}
+# r import
+# Imporiting the dataset
+# ds <- open_dataset("parquet_dataset")
+SampleTable <- fread("provided/barcode_correspondance.tsv")
+SampleTable <- SampleTable[, .(Barcode, Sample_name, Genotype, Condition, Rep)]
+```
+
+``` {r filtering}
+# r filtering
+# Identify Target Samples
+# target_barcodes <- SampleTable[
+#   Genotype %in% c("Col0", "xrn4", "xrn4_dne1") & Condition == "Seedling", Barcode]
+# 
+# df_targets <- ds %>%
+#   filter(Barcode %in% target_barcodes) %>%
+#   dplyr::select(Barcode, Feature.name, PolyA, Add_tail, PolyA_length_signal, Tail_tag) %>%
+#   collect() %>%
+#   setDT()
+# 
+# df_targets <- df_targets[!grepl("^ATCG|^ATMG", Feature.name)]
+# 
+# setnames(df_targets,
+#          old = c("Feature.name", "PolyA", "PolyA_length_signal", "Add_tail"),
+#          new = c("Feature.name", "polytail", "polya_length", "additional_tail"))
+# 
+# df_targets[, polya_size := floor(polya_length)]
+# df_targets[, polytail := fifelse(polytail == "", NA_character_, polytail)]
+# 
+# # remove all 3' truncated fragments / untailed reads if you want to analyse tail size. 
+# #df_targets <- df_targets[polya_size > 9] 
+# #df_targets <- df_targets[!tail == "none"] 
+# 
+# # remove rows with NA or emty string in polya_size
+# df_targets <- df_targets[!is.na(polya_size)]
+# df_targets <- df_targets[!polytail ==""]
+# 
+# df_targets <- merge(SampleTable, df_targets, by = "Barcode", df_targets.y = TRUE)
+# setnames(df_targets, "Rep", "Rep")
+# #rm(SampleTable); gc()  
+# 
+# # 50 Filtering
+# df_counts <- df_targets[, .(total_reads = .N), by = .(Feature.name, Rep, Genotype)]
+# length(unique(df_counts$Feature.name))
+# df_counts <- df_counts[total_reads > 50]
+# length(unique(df_counts$Feature.name))
+# 
+# df_targets <- df_targets[Feature.name %in% unique(df_counts$Feature.name)]
+
+``` 
+
+``` {r Table of percentages}
+# r Table of percentages
+## percent Long reads
+# Table_Long <- df_targets[, .(total_reads = .N, Long_reads = sum(polya_size > 60 , na.rm = TRUE), Percent = 100 * sum(polya_size > 60, na.rm = TRUE) / .N), by = .(Feature.name, Rep, Genotype)]
+# 
+# Table_Long[, mean_Long := mean(Percent, na.rm = TRUE), by = .(Feature.name, Genotype)]
+# mean_Table_Long <- unique(Table_Long[, .(Feature.name, mean_Long, Genotype)], by = c("Feature.name", "Genotype"))
+# mean_Table_Long$mean_Long <- round(mean_Table_Long$mean_Long, 2)
+# Table_Long <- Table_Long[, .(Feature.name, Genotype, Rep, Percent)]
+# fwrite(Table_Long, file = "Table_Long.csv")
+# 
+# # Long count
+# Long_count <- df_targets[, .(total_reads = .N, Long_reads = sum(polya_size > 60 , na.rm = TRUE), perc_Long = 100 * sum(polya_size > 60, na.rm = TRUE) / .N
+# ), by = .(Rep, Genotype)]
+# 
+# Table_Long <- Table_Long[, Condition := "Seedling"]
+# # write to file
+# fwrite(Table_Long, "r_tables/Table_Long.txt", row.names = FALSE )
+Table_Long <- fread("r_tables/Table_Long.txt")
+
+```
+
+``` {r Table prepare + helper functions}
+# r Table prepare + helper functions
+my_pRepare <- function(x) { 
+  
+  x$variable <- factor(x$Genotype, levels=c("Col0", "xrn4", "xrn4_dne1"))
+  x$Percent_co <- ifelse(x$Percent==0, 0.1/x$total*100, x$Percent)
+  
+  x$Long <- as.numeric(x$Percent_co)
+  x$NonLong <- as.numeric(100 - x$Percent_co)
+  
+  x$Rep_V <- factor(x$Rep, levels=c("Rep1", "Rep2", "Rep3"))
+  x$Feature.name_V <- factor(x$Feature.name)
+  return(x)
+}
+Table <- my_pRepare(Table_Long)
+
+nrow(Table)
+length(unique(Table$Feature.name))
+table(Table$variable)
+table(Table$Rep_V)
+
+# ---- Fitlering to have the same Feature.name in all Rep x Genotype combinations -----
+filter_A_for_all_BC <- function(df) {
+  # Extraire toutes les combinaisons distinctes de Genotype et Rep
+  all_BC <- df %>%
+    distinct(Genotype, Rep)
+  
+  # Pour chaque Feature.name, compter combien de combinaisons (B,C) il couvre
+  valid_A <- df %>%
+    distinct(Genotype, Rep, Feature.name) %>%
+    group_by(Feature.name) %>%
+    summarise(n_bc = n()) %>%
+    ungroup()
+  
+  # Nombre total de combinaisons Genotype, Rep dans la table
+  total_bc <- nrow(all_BC)
+  
+  # Garder les Feature.name qui ont toutes les combinaisons Genotype, Rep
+  valid_A <- valid_A %>%
+    filter(n_bc == total_bc) %>%
+    pull(Feature.name)
+  
+  # Filtrer le df original pour garder uniquement les lignes avec ces A valides
+  df %>% filter(Feature.name %in% valid_A)
+}
+
+Table <- filter_A_for_all_BC(Table)
+print(uniqueN(Table$Feature.name))
+
+# Number of transcripts per Rep x Genotype combination
+transcript_counts <- Table[, .(n_transcripts = uniqueN(Feature.name)), by = .(Rep, Genotype)]
+print(transcript_counts)
+
+# Overall range across groups
+range(transcript_counts$n_transcripts)
+
+
+table_glht <- function(x) {
+  pq <- summary(x)$test
+  mtests <- cbind(pq$coefficients, pq$sigma, pq$tstat, pq$pvalues)
+  error <- attr(pq$pvalues, "error")
+  colnames(mtests) <- c("Estimate", "Std.Error", "z.value", "p.value")
+  return(mtests)
+}
+```
+
+``` {r global glm no subsapling}
+# r global glm no subsapling 
+my_glm1 <- function(Data) {
+  
+  Data <- filter_A_for_all_BC(Data)
+  set.seed(1)
+
+  print("Model with only genotype as explanatory variable")
+  model <- glm(cbind(Long, NonLong) ~ variable  + Rep_V + Feature.name_V,
+               family = quasibinomial,
+               data = Data)
+  print("Summary of the model")
+  print(summary(model))
+
+  Test <- anova(model, test = "F")
+  print("ANOVA: Results of the F test")
+  print(Test)
+
+    print("Confidence interval")
+  model2 <- glm(cbind(Long, NonLong) ~ variable - 1,
+                family = quasibinomial,
+                data = Data)
+  print(plogis(confint(model2))) # CIs on log-odds and then transform to probabilities
+
+  tuk_raw <- glht(model, mcp(variable = "Tukey"))
+  tuk <- summary(tuk_raw)
+  print("Tukey test:")
+  print(tuk)
+  
+  cld_res <- cld(tuk)
+
+  letters_vec <- cld_res$mcletters$Letters
+  letters_df <- data.frame(
+    Genotype = names(letters_vec),
+    group    = as.character(letters_vec),
+    stringsAsFactors = FALSE)
+  
+  # Odds ratio = probability of certain amount of transcripts getting Longer tails for each genotype
+  # Odds ratios and CI on the contrasts
+  coef  <- tuk$test$coef          # log-odds differences
+  se    <- tuk$test$sigma         # standard errors
+  pval  <- tuk$test$pvalues       # adjusted p-values
+  
+  ORs   <- exp(coef)
+  tuk_ci <- confint(tuk_raw)$confint
+  lower  <- exp(tuk_ci[, "lwr"])
+  upper  <- exp(tuk_ci[, "upr"])
+  
+ OR_table <- data.frame(
+  Contrast = names(coef),
+  OR       = round(ORs,   3),
+  CI_low   = round(lower, 3),
+  CI_high  = round(upper, 3),
+  p_adj    = signif(pval, 3),  # 3 significant digits, not 3 decimals
+  row.names = NULL,
+  stringsAsFactors = FALSE
+)
+    print(table(Data$variable))
+
+  print("Odds ratios for Tukey contrasts:")
+  print(OR_table) 
+  
+  
+  # Building a data frame of letters per genotype to return to use later in boxplot
+  letters_vec <- cld_res$mcletters$Letters
+  letters_df <- data.frame(
+    Genotype = names(letters_vec),
+    group    = as.character(letters_vec),
+    stringsAsFactors = FALSE
+  )
+  
+  
+ return(list(
+    letters   = letters_df,
+    OR_table  = OR_table
+))
+
+}
+
+```
+
+``` {r global glm + subsampling}
+my_glm2 <- function(Data) {
+
+  # Subsampling
+    Data <- filter_A_for_all_BC(Data)
+    #Data <- Data %>% group_by(variable, Rep) %>% sample_n(1000) %>% ungroup() 
+    set.seed(1)
+    keep_features <- sample(unique(Data$Feature.name), ((1000)))
+    Data <- Data %>% filter(Feature.name %in% keep_features)
+    # Checking if the same Feature.names are compared across reps and genotype
+    check <- Data %>%
+  distinct(Feature.name, Genotype, Rep) %>%
+  count(Feature.name) %>%
+  summarise(min_n = min(n), max_n = max(n))
+  print(check)
+    
+  print("GLM with genotype, replicate and feature as explanatory variables")
+  model <- glm(cbind(Long, NonLong) ~ variable + Rep_V + Feature.name_V,
+               family = quasibinomial,
+               data = Data)
+  print("Summary of the model")
+  print(summary(model))
+
+  Test <- anova(model, test = "F")
+  print("ANOVA: Results of the F test")
+  print(Test)
+
+  print("Confidence interval")
+  model2 <- glm(cbind(Long, NonLong) ~ variable - 1,
+                family = quasibinomial,
+                data = Data)
+  print(plogis(confint(model2, trace = TRUE))) # CIs on log-odds and then transform to probabilities
+
+  tuk_raw <- glht(model, mcp(variable = "Tukey"))
+  tuk <- summary(tuk_raw)
+  print("Tukey test:")
+  print(tuk)
+  
+  cld_res <- cld(tuk)
+
+  letters_vec <- cld_res$mcletters$Letters
+  letters_df <- data.frame(
+    Genotype = names(letters_vec),
+    group    = as.character(letters_vec),
+    stringsAsFactors = FALSE)
+  
+  # Odds ratio = probability of certain amount of transcripts getting Longer tails for each genotype
+  # Odds ratios and CI on the contrasts
+  coef  <- tuk$test$coef          # log-odds differences
+  se    <- tuk$test$sigma         # standard errors
+  pval  <- tuk$test$pvalues       # adjusted p-values
+  
+  ORs   <- exp(coef)
+  tuk_ci <- confint(tuk_raw)$confint
+  lower  <- exp(tuk_ci[, "lwr"])
+  upper  <- exp(tuk_ci[, "upr"])
+  
+    # Counts per genotype
+  counts_df <- as.data.frame(table(Data$variable))
+  colnames(counts_df) <- c("Genotype", "n_obs")
+
+  # Merge letters and counts by Genotype
+  letters_counts <- merge(letters_df, counts_df, by = "Genotype", all.x = TRUE)
+
+  OR_table <- data.frame(
+  Contrast = names(coef),
+  OR       = round(ORs,   3),
+  CI_low   = round(lower, 3),
+  CI_high  = round(upper, 3),
+  p_adj    = signif(pval, 3),  # 3 significant digits, not 3 decimals
+  row.names = NULL,
+  stringsAsFactors = FALSE
+)
+  # Prepare a combined export table:
+  # Part 1: ORs (contrast-level)
+  OR_export <- OR_table
+  OR_export$type <- "contrast"
+
+  # Part 2: letters + counts (genotype-level)
+  letters_export <- letters_counts
+  letters_export$Contrast <- letters_export$Genotype
+  letters_export$OR       <- NA_real_
+  letters_export$CI_low   <- NA_real_
+  letters_export$CI_high  <- NA_real_
+  letters_export$p_adj    <- NA_real_
+  letters_export$type     <- "genotype"
+
+  OR_export$Genotype <- NA_character_
+  OR_export$group    <- NA_character_
+  OR_export$n_obs    <- NA_integer_
+
+  OR_export  <- OR_export[,  c("type","Contrast","Genotype","group","n_obs","OR","CI_low","CI_high","p_adj")]
+  letters_export <- letters_export[, c("type","Contrast","Genotype","group","n_obs","OR","CI_low","CI_high","p_adj")]
+
+  combined_table <- rbind(OR_export, letters_export)
+
+  print("Combined OR + letters + counts table:")
+  print(combined_table)
+  
+  return(list(
+    letters        = letters_df,
+    OR_table       = OR_table,
+    combined_table = combined_table
+  ))
+}
+
+res <- my_glm2(Table)
+
+letters_df      <- res$letters
+OR_table        <- res$OR_table
+combined_table  <- res$combined_table
+
+write.csv(OR_table, "r_tables/Long_ORs_Tukey.csv", row.names = FALSE)
+```
+
+``` {r global boxplot, fig.width=10, fig.height=4}
+# r global boxplot, fig.width=10, fig.height=4
+
+# box Long global
+# For label plotitng
+  # One y position for all letters (below 0)
+  letters_df$y <- 15    # adjust as needed
+  # One x position in each facet (middle Rep)
+  letters_df$x <- "Rep2"   # since Rep has "Rep1", "Rep2", "Rep3"
+box <- ggplot(Table, aes(x = Rep, y = Percent, color = Genotype, fill = Genotype)) +
+  
+  
+  geom_boxplot(position = position_dodge(0.9), outlier.shape = NA,  width=0.5, linewidth = 1, alpha=0.4, notch=F)+
+  facet_wrap(~ Genotype, nrow = 1) +
+
+  scale_y_continuous(breaks = seq(0, 100, 10)) +
+  coord_cartesian(ylim = c(10, 100)) +  
+  scale_color_manual(values = genotype_colors, name = "Genotype")+
+  scale_fill_manual(values = genotype_colors, name = "Genotype")+
+  # theme_no_grid()+
+  theme_classic(base_size = 18)+
+  theme(
+   axis.ticks.x = element_line(color = "black"),# make sure ticks exist
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    legend.position="right", 
+    strip.backround = element_rect(fill = "white", color = "grey80"), 
+    strip.text = element_text(face = "bold")
+  ) +
+  labs(
+    title = "Global percentage of long poly(A) tails reads by genotype",
+    #x="",
+    y= "% of reads with long poly(A) tails"
+    )+
+  geom_text(data = letters_df,
+            aes(x = x, y = y, label = group),
+            inherit.aes = FALSE,
+            size = 8,
+            colour = "blue")
+box
+
+saveRDS(box,"r_plots/objects/boxLong_global.rds")          
+#pdf
+ggsave("r_plots/boxLong_global.pdf", box, width = 9, height = 5, dpi = 1200, scale = 1.3)
+
+#svg
+ggsave("r_plots/boxLong_global.svg", box, width = 9, height = 5, dpi = 1200, scale = 1.3)
+```
+
+``` {r per transcript glm}
+# r per transcript glm
+#function to keep only gene present in all combination of groups
+# Apply hte function
+my_glm_test <- function(x) {
+  
+  Result_table_exp <- data.frame(Estimate=as.numeric(), Std.Error=as.numeric(), z.value=as.numeric(), p.value=as.numeric(), comparaison=as.character(), Feature.name=as.character(), padj=as.character(), Condition=as.character())
+  
+  for (t in unique(x$Condition))  {
+    cat("Condition:", t, "\n")
+    
+    Result_table <- data.frame(Estimate=as.numeric(), Std.Error=as.numeric(), z.value=as.numeric(), p.value=as.numeric(), comparaison=as.character(), Feature.name=as.character())
+    Selec_condition <- x[x$Condition==t,]
+    Selec_condition <- filter_A_for_all_BC(Selec_condition)
+    
+    
+    for (i in unique(Selec_condition$Feature.name)) {
+     # print(i)
+      PermRNA_percent_50_tailed_U_gene <- Selec_condition[Selec_condition$Feature.name==i, ]
+      if (nrow(PermRNA_percent_50_tailed_U_gene) <= 2) {next}
+      tryCatch({     
+        Uri1 <- glm(cbind(Long , NonLong   ) ~ variable, family=quasibinomial, data=PermRNA_percent_50_tailed_U_gene)
+        glht_obj <- summary(glht(Uri1 , mcp(variable="Tukey")))
+        Tab <- as.data.frame(table_glht(glht_obj))
+        Tab$comparaison <- row.names(Tab)
+        Tab$Feature.name <- i
+        rownames(Tab) <- NULL
+        Result_table <- rbind(Result_table, Tab)
+      }, error = function(e) {
+        message("Skipping ", i, ": ", e$message)
+      })
+    }
+    
+    
+    Result_table$padj <- p.adjust(Result_table$p.value, "BH")
+    Result_table$Condition <- t
+    Result_table_exp <- rbind(Result_table_exp, Result_table)
+    
+  }
+  
+  return(Result_table_exp)
+}
+
+# Apply hte function
+
+Stat <- my_glm_test(Table)
+
+## count number of differentially expressed genes
+Stat$diff <- "no-sign"
+Stat[Stat$padj<=0.05,]$diff <- "sign"
+
+Stat$Change <- "no-change"
+Stat[Stat$Estimate<0,]$Change <- "decrease"
+Stat[Stat$Estimate>0,]$Change <- "increase"
+
+
+Stat$diff <- as.factor(Stat$diff)
+Stat$Change <- as.factor(Stat$Change)
+
+Count_ofDPolyAgenes <- Stat %>% group_by(comparaison, Condition, diff, Change, .drop=FALSE) %>%
+  summarise(number=n())  %>%
+  group_by(comparaison, Condition) %>%
+  mutate(total=sum(number), Percent=100*number/sum(number))
+
+Count_ofDPolyAgenes$comparaison <- factor(Count_ofDPolyAgenes$comparaison, levels=c("xrn4 - Col0", 
+                                                                                    "xrn4_dne1 - Col0", 
+                                                                                    "xrn4_dne1 - xrn4"))
+Count_ofDPolyAgenes_diff <- Count_ofDPolyAgenes[Count_ofDPolyAgenes$diff=="sign",]
+
+write.table(Count_ofDPolyAgenes_diff, "Count_ofDiff_Long_PolyA_genes_diffmRNA.txt", sep='\t', row.names=FALSE, quote=FALSE)
+```
+
+``` {r differential plots}
+# Graph
+my_theme <- theme(panel.spacing = unit(0.1, "lines"),
+                  plot.title = element_text(hjust = 0.5),
+                  panel.background = element_blank(),
+                  panel.grid.major.y = element_line(linewidth = 0.2, linetype = 'dashed', colour = "gray70"),
+                  panel.border = element_rect(colour="black",fill=NA,linewidth=0.5),
+                  axis.text.y = element_text(color="black",size=8),
+                  axis.text.x = element_blank(),
+                  axis.ticks.x = element_blank(),
+                  #axis.title = element_blank(),
+                  #legend.position="none",
+                  legend.text = element_text(color="black",size=9),
+                  legend.title = element_text(color="black",size=9),
+                  legend.key.size = unit(0.8,"line"),
+                  strip.text = element_blank())
+
+
+my_colors <- c("#E69F00", "#56B4E9", "#CC79A7", "#009E73")
+
+
+Count_ofDPolyAgenes_diff_selec_UP <- Count_ofDPolyAgenes_diff[Count_ofDPolyAgenes_diff$Change=="increase", ]
+
+Count_ofDPolyAgenes_diff_selec_DOWN <- Count_ofDPolyAgenes_diff[Count_ofDPolyAgenes_diff$Change=="decrease", ]
+
+
+p1 <- ggplot(Count_ofDPolyAgenes_diff_selec_DOWN, aes(x=comparaison, y=Percent, fill=comparaison)) + 
+  geom_bar(stat="identity") +
+  geom_text(aes(label=number), position=position_dodge(width=0.9), vjust=+2, hjust=0.5, size=2) +
+  scale_fill_manual(values = my_colors) +
+  my_theme +
+  scale_y_reverse(limits=c(50,0), breaks = seq(50, 0, by = -10)) +
+  
+  labs(
+    title = "Decreased long poly(A) tail percentage",
+    x = " ",
+    y = "% of significant transcripts",
+    fill = "Comparison"
+  )
+
+
+p2 <- ggplot(Count_ofDPolyAgenes_diff_selec_UP, aes(x=comparaison, y=Percent, fill=comparaison)) + 
+  geom_bar(stat="identity") +
+  geom_text(aes(label=number), position=position_dodge(width=0.9), vjust=-0.5, hjust=0.5, size=2) +
+  scale_y_continuous(limits=c(0, 50), breaks=seq(0,50,by=10)) +
+  scale_fill_manual(values = my_colors) +
+  my_theme +
+  
+  labs(
+    title = "Increased long poly(A) tail percentage",
+    x = " ",
+     y = "% of significant transcripts",
+    fill = "Comparison"
+  )
+
+saveRDS(p1, "r_plots/objects/long_diffcount_down.rds")
+saveRDS(p2, "r_plots/objects/long_diffcount_up.rds")
+
+library(gridExtra)
+p <- grid.arrange(p2, p1, ncol=1, nrow = 2, widths=c(8), heights=c(5,5)
+                  )
+saveRDS(p, "r_plots/objects/long_diffcount_ALL.rds")
+
+ggsave("r_plots/Differential_Long_poly_tails.svg", p, width = 5, height = 4, dpi = 300, scale = 1.3)
+```
+
+``` {r global glm on diff Long tails xrn4_xrn4_dne1}
+#r global glm on diff Long tails xrn4_xrn4_dne1
+
+Long_xrn4_xrn4_dne1 <- Stat[Stat[["diff"]] == "sign" & Stat[["Change"]] == "decrease" & Stat[["comparaison"]] == "xrn4_dne1 - xrn4", ]
+length(Long_xrn4_xrn4_dne1$Feature.name)
+
+write.table(Long_xrn4_xrn4_dne1, "r_tables/Long_xrn4_xrn4_dne1_full_pipeline.txt", sep='\t', row.names=FALSE, quote=FALSE)
+
+Long_Table_xrn4_xrn4_dne1 <- Table_Long[Feature.name %in% unique(Long_xrn4_xrn4_dne1$Feature.name)]
+length(unique(Long_Table_xrn4_xrn4_dne1$Feature.name))
+
+Table1 <- my_pRepare(Long_Table_xrn4_xrn4_dne1)
+res <- my_glm1(Table1)
+
+letters_df <- res$letters
+letters_df
+
+OR_table   <- res$OR_table
+
+# write to file
+write.csv(OR_table, "r_tables/Long_diff_xnr4_xrn4_dne1_ORs_Tukey.csv", row.names = FALSE)
+```
+
+``` {r boxplots of differentialy regulated transcripts: Long xrn4 - xrn4_dne1, fig.width=10, fig.height=4}
+# Long_xrn4_xrn4_dne1 Reps separated
+# For label plotitng
+  # One y position for all letters (below 0)
+  letters_df$y <- 87    # adjust as needed
+  # One x position in each facet (middle Rep)
+  letters_df$x <- "Rep2"   # since Rep has "Rep1", "Rep2", "Rep3"
+
+box <- ggplot(Long_Table_xrn4_xrn4_dne1, aes(x = Rep, y = Percent, color = Genotype, fill = Genotype)) +
+  
+  geom_boxplot(position = position_dodge(0.9), outlier.shape = NA,
+               width = 0.5, linewidth = 1, alpha = 0.4, notch = F) +
+  facet_wrap(~ Genotype, nrow = 1) +
+  scale_y_continuous(breaks = seq(0, 100, 10)) +
+  coord_cartesian(ylim = c(20, 90)) +  
+  scale_color_manual(values = genotype_colors, name = "Genotype") +
+  scale_fill_manual(values = genotype_colors, name = "Genotype") +
+  theme_classic(base_size = 18) +
+  theme(
+    axis.ticks.x = element_line(color = "black"),# make sure ticks exist
+    axis.text.x = element_blank(),
+    axis.title.x  = element_blank(),
+    legend.position  = "right",
+    strip.background = element_rect(fill = "white", color = "grey80"),
+    strip.text       = element_text(face = "bold")                      
+  ) +
+  labs(
+    title = "Long poly(A) tail percentage increase in xrn4-dne1 vs xrn4 (n = 110) ",  
+    x = "",
+    y = "% of reads with long poly(A) tails"
+  )+
+  geom_text(data = letters_df,
+            aes(x = x, y = y, label = group),
+            inherit.aes = FALSE,
+            size = 8,
+            colour = "blue")
+box
+
+saveRDS(box, "r_plots/objects/long_diff_box.rds")  
+#pdf
+ggsave("r_plots/Long_diff_xrn4_xrn4_dne1_full_pipeline.pdf", box, width = 9, height = 5, dpi = 300, scale = 1.3)
+#svg
+ggsave("r_plots/Long_diff_xrn4_xrn4_dne1_full_pipeline.svg", box, width = 9, height = 5, dpi = 300, scale = 1.3)
+
+```
+
+``` {r  global glm on no_Long_DOWN__diff_xrn4_xrn4_dne1}
+
+# r  global glm on no_Long_DOWN_diff_xrn4_xrn4_dne1 
+
+# no_Long_diff_xrn4_xrn4_dne1 <-Table_Long[!Feature.name %in% unique(Long_xrn4_xrn4_dne1$Feature.name)]
+# length(no_Long_diff_xrn4_xrn4_dne1$Feature.name)
+# 
+# #write.table(no_Long_diff_xrn4_xrn4_dne1, "r_tables/no_Long_xrn4_xrn4_dne1_full_pipeline.txt", sep='\t', row.names=FALSE, quote=FALSE)
+# 
+# 
+# Table2 <- my_pRepare((no_Long_diff_xrn4_xrn4_dne1))
+# res <- my_glm2(Table2)
+# 
+# letters_df <- res$letters
+# letters_df
+# 
+# OR_table   <- res$OR_table
+# 
+# # write to file
+# write.csv(OR_table, "r_tables/no_Long_diff_xnr4_xrn4_dne1_ORs_Tukey.csv", row.names = FALSE)
+```
+
+``` {r boxplots: no_Long_diff_xrn4_xrn4_dne1, fig.width=10, fig.height=4}
+# no_Long_diff xrn4 - xrn4_dne1 Reps together w faceting
+# For label plotitng
+  # One y position for all letters (below 0)
+#   letters_df$y <- 15    # adjust as needed
+#   # One x position in each facet (middle Rep)
+#   letters_df$x <- "Rep2"   # since Rep has "Rep1", "Rep2", "Rep3"
+# 
+# box <- ggplot(no_Long_diff_xrn4_xrn4_dne1, aes(x = factor(Rep), y = Percent, fill = Genotype, color = Genotype)) +
+#   geom_boxplot(outlier.shape = NA, width = 0.5, linewidth = 1, alpha = 0.4, notch = FALSE) +
+#   facet_wrap(~ Genotype, nrow = 1) +
+#   scale_y_continuous(breaks = seq(0, 100, 10)) +
+#   coord_cartesian(ylim = c(10, 100)) +  
+#   scale_fill_manual(values = genotype_colors, breaks = names(genotype_colors)) +
+#   scale_color_manual(values = genotype_colors, breaks = names(genotype_colors)) +
+# 
+#   theme_classic(base_size = 18) +
+#   theme(
+#     axis.ticks.x = element_line(color = "black"),# make sure ticks exist
+#     axis.text.x = element_blank(),
+#     axis.title.x = element_blank(),
+#     legend.position = "none",
+#     strip.background = element_rect(fill = "white", color = "grey80"),
+#     strip.text = element_text(face = "bold")
+#   ) +
+#   labs(
+#     title = "No significant long poly(A) tail difference in xrn4-dne1 vs xrn4",
+#     x = "",
+#     y = "% of reads with long poly(A) tails"
+#   )+
+#   geom_text(data = letters_df,
+#             aes(x = x, y = y, label = group),
+#             inherit.aes = FALSE,
+#             size = 8,
+#             colour = "blue")
+# box
+# 
+# #pdf
+# ggsave("r_plots/no_Long_diff_xrn4_xrn4_dne1_full_pipeline.pdf", box, width = 9, height = 5, dpi = 300, scale = 1.3)
+# #svg
+# ggsave("r_plots/no_Long_diff_xrn4_xrn4_dne1_full_pipeline.svg", box, width = 9, height = 5, dpi = 300, scale = 1.3)
+```
+
+``` {r upsetr xrn4-xrn4_dne1 }
+
+# strip_isoform <- function(x) sub("\\.[0-9]+$", "", x)
+# 
+# # Compare with list of DNE 1 targets
+# #Long tails UP in xrn4 dne vs xrn4
+# List_A <- Stat[Stat$comparaison=="xrn4_dne1 - xrn4" & Stat$padj<=0.05 & Stat$Estimate>0,]
+# fwrite(List_A, "r_tables/Long_xrn4_xrn4_dne1_UP_full_pipeline.txt")
+# 
+# #Long tails DOWN in xrn4 dne vs xrn4
+# List_B <- Stat[Stat$comparaison=="xrn4_dne1 - xrn4" & Stat$padj<=0.05 & Stat$Estimate<0,]
+# fwrite(List_B, "r_tables/Long_xrn4_xrn4_dne1_DOWN_full_pipeline.txt")
+```
+
+
+```{r combined_boxplot_global_vs_diff, fig.width=14, fig.height=5, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+
+#-----------------------------
+# 1. Prepare the two datasets
+#-----------------------------
+Table_filtered <- filter_A_for_all_BC(Table)
+global_df <- Table_filtered %>%
+  dplyr::select(Genotype, Rep, Percent, Feature.name) %>%
+  dplyr::mutate(
+    Subset = "Global",
+    Rep = factor(as.character(Rep), levels = c("Rep1", "Rep2", "Rep3"))
+  )
+
+diff_df <- Long_Table_xrn4_xrn4_dne1%>%
+  dplyr::select(Genotype, Rep, Percent, Feature.name) %>%
+  dplyr::mutate(
+    Subset = "Differential",
+    Rep = factor(as.character(Rep), levels = c("Rep1", "Rep2", "Rep3"))
+  )
+
+combined_df <- dplyr::bind_rows(global_df, diff_df)
+
+# make sure character/factor columns are clean
+combined_df <- combined_df %>%
+  dplyr::mutate(
+    Genotype = as.character(Genotype),
+    Rep = factor(as.character(Rep), levels = c("Rep1", "Rep2", "Rep3")),
+    Subset = factor(as.character(Subset), levels = c("Global", "Differential")),
+    xgroup = factor(
+      paste(Subset, Rep, sep = "_"),
+      levels = c(
+        "Global_Rep1", "Global_Rep2", "Global_Rep3",
+        "Differential_Rep1", "Differential_Rep2", "Differential_Rep3"
+      )
+    )
+  )
+
+#-----------------------------
+# 2. Add sample size labels
+#-----------------------------
+# These are total counts per genotype and subset
+n_df <- combined_df %>%
+  dplyr::group_by(Genotype, xgroup) %>%
+  dplyr::summarise(n = dplyr::n(), .groups = "drop") %>%
+  dplyr::mutate(
+    y = 47,
+    lab = paste0("n = ", n)
+  )
+
+#-----------------------------
+# 3. Plot
+#-----------------------------
+
+box_combined <- ggplot(
+  combined_df,
+  aes(x = xgroup, y = Percent, fill = Genotype, color = Genotype)
+) +
+  geom_boxplot(
+    outlier.shape = NA,
+    width = 0.6,
+    linewidth = 1,
+    alpha = 0.4,
+    notch = FALSE
+  ) +
+  stat_summary(
+  fun = median,
+  geom = "text",
+  aes(label = round(after_stat(y), 2)),
+  position = position_nudge(y = 1),
+  color = "red",
+  size = 4,
+  show.legend = FALSE
+  ) +
+  facet_wrap(~ Genotype, nrow = 1) +
+  scale_y_continuous(
+    limits = c(12, 100),
+    breaks = seq(0, 100, 10)
+  ) +
+  scale_x_discrete(
+    labels = c("R1", "R2", "R3", "R1", "R2", "R3")
+  ) +
+  scale_fill_manual(values = genotype_colors, breaks = names(genotype_colors)) +
+  scale_color_manual(values = genotype_colors, breaks = names(genotype_colors)) +
+  labs(
+    title = "Long poly(A) tails: global vs. transcripts increased in xrn4-dne1 vs. xrn4",
+    x = NULL,
+    y = "% of reads with long poly(A) tails"
+  ) +
+  geom_vline(xintercept = 3.5, linetype = "dashed", color = "grey60") +
+  annotate("text", x = 2, y = 15, label = "Global", size = 5, fontface = "bold") +
+  annotate("text", x = 5, y = 15, label = "Differential", size = 5, fontface = "bold") +
+  # geom_text(
+  # data = n_df,
+  # aes(x = xgroup, y = y, label = lab),
+  # inherit.aes = FALSE,
+  # size = 5,
+  # color = "black"
+  # ) +
+  theme_classic(base_size = 18) +
+  theme(
+    axis.text.x = element_text(color = "black"),
+    axis.title.x = element_blank(),
+    legend.position = "none",
+    strip.background = element_rect(fill = "white", color = "grey80"),
+    strip.text = element_text(face = "bold")
+  )
+
+box_combined
+
+saveRDS(box_combined, "r_plots/objects/long_combined_box.rds")
+ggsave("r_plots/long_box_combined.pdf", box_combined, width = 9, height = 5, dpi = 300, scale = 1.3)
+ggsave("r_plots/long_box_combined.svg", box_combined,  width = 9, height = 5, dpi = 300, scale = 1.3)
+
+
+```
